@@ -84,16 +84,13 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape, reward_scale)
     agent = SAC(env.observation_space.shape, env.action_space.shape, **alg_args)
 
-    # initialize session, agent and memory
+    # initialize session, agent, memory, environment
     sess = tf.get_default_session()
     agent.initialize(sess)
     saver = tf.train.Saver()
     sess.graph.finalize()
     memory.initialize(env)
-
-    if args.load_path is not None:
-        print('Restoring parameters from: ', args.load_path)
-        saver.restore(sess, args.load_path)
+    obs = env.reset()
 
     # setup tracking
     stats = {}
@@ -102,10 +99,14 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     episode_rewards_history = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
     n_episodes = 0
+    start_step = 1
 
-    obs = env.reset()
+    if args.load_path is not None:
+        saver.restore(sess, args.load_path)
+        start_step = sess.run(tf.train.get_global_step()) + 1
+        print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
 
-    for t in range(1, n_total_steps + 1):
+    for t in range(start_step, n_total_steps + start_step):
         tic = time.time()
 
         # sample action -> step env -> store transition

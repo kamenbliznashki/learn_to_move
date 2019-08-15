@@ -99,7 +99,7 @@ def make_single_env(env_name, subrank, seed, env_args, output_dir):
 
 def build_env(args, env_args):
     ncpu = mp.cpu_count()
-    if sys.platform == 'darwin': ncpu // 2
+    if sys.platform == 'darwin': ncpu //= 2
     nenv = args.n_env or ncpu
 
     def make_env(rank):

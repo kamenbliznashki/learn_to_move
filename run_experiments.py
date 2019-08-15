@@ -93,5 +93,3 @@ if __name__ == '__main__':
 
     with Pool(processes=n_workers) as pool:
         pool.map(partial(launch_training_job, parent_dir, args), extra_args_products)
-#    for extra_args in extra_args_products:
-#        launch_training_job(parent_dir, job_name, args, extra_args)
