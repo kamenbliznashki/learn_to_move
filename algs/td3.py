@@ -58,7 +58,8 @@ class TD3:
         policy_optimizer = tf.train.AdamOptimizer(policy_lr, name='policy_optimizer')
         #   main train ops
         self.q_train_op = q_optimizer.minimize(q_loss, var_list=[q1.trainable_vars, q2.trainable_vars])
-        self.policy_train_op = policy_optimizer.minimize(policy_loss, var_list=policy.trainable_vars)
+        self.policy_train_op = policy_optimizer.minimize(policy_loss, var_list=policy.trainable_vars,
+                                                            global_step=tf.train.get_or_create_global_step())
         #   target update ops
         self.target_update_ops = tf.group(self.create_target_update_op(q1, q1_target) +
                                           self.create_target_update_op(q2, q2_target) +
@@ -130,7 +131,6 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
     episode_rewards_history = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
-    last_episode_rewards = 0
     n_episodes = 0
 
     obs = env.reset()
@@ -141,7 +141,8 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         # sample action -> step env -> store transition
         actions = agent.get_actions(obs, expl_noise)
         next_obs, r, done, _ = env.step(actions)
-        memory.store_transition(obs, actions, r, done, next_obs)
+        done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
+        memory.store_transition(obs, actions, r, done_bool, next_obs)
         obs = next_obs
 
         # keep records

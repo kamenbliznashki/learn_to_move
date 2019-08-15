@@ -11,7 +11,7 @@ import tensorflow.compat.v1 as tf
 tf.logging.set_verbosity(tf.logging.ERROR)
 
 import gym
-from env_wrappers import DummyVecEnv, SubprocVecEnv, Monitor, L2M2019EnvBaseWrapper
+from env_wrappers import DummyVecEnv, SubprocVecEnv, Monitor, L2M2019EnvBaseWrapper, RandomPoseInitEnv, ZeroOneActionsEnv, MaxAndSkipEnv, RewardAugEnv
 from logger import save_json
 
 parser = argparse.ArgumentParser()
@@ -32,6 +32,9 @@ parser.add_argument('--save_interval', default=1000, type=int)
 parser.add_argument('--log_interval', default=1000, type=int)
 
 
+# --------------------
+# Config
+# --------------------
 
 def parse_unknown_args(args):
     # construct new parser for the string of unknown args and reparse; each arg is now a list of items
@@ -45,7 +48,33 @@ def parse_unknown_args(args):
             out.__dict__[k] = v[0]
     return out
 
+def get_alg_config(alg, env, extra_args=None):
+    alg_args = getattr(import_module('algs.' + alg), 'defaults')(env)
+    if extra_args is not None:
+        alg_args.update({k: v for k, v in extra_args.items() if k in alg_args})
+    return alg_args
 
+def get_env_config(env, extra_args=None):
+    env_args = None
+    if env == 'L2M2019':
+        env_args = {'model': '2D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2}
+    if extra_args is not None and env_args is not None:
+        env_args.update({k: v for k, v in extra_args.items() if k in env_args})
+    return env_args
+
+def print_and_save_config(args, env_args, alg_args):
+    print('Building environment and agent with the following config:')
+    print(' Run config:\n' + pprint.pformat(args.__dict__))
+    print(' Env config: ' + args.env + (env_args is not None)*('\n' + pprint.pformat(env_args)))
+    print(' Alg config: ' + args.alg + '\n' + pprint.pformat(alg_args))
+    save_json(args.__dict__, os.path.join(args.output_dir, 'config_run.json'))
+    if env_args: save_json(env_args, os.path.join(args.output_dir, 'config_env.json'))
+    save_json(alg_args, os.path.join(args.output_dir, 'config_alg.json'))
+
+
+# --------------------
+# Environment
+# --------------------
 
 def make_single_env(env_name, subrank, seed, env_args, output_dir):
     # env_kwargs serve to initialize L2M2019Env
@@ -55,6 +84,10 @@ def make_single_env(env_name, subrank, seed, env_args, output_dir):
 
     if env_name == 'L2M2019':
         env = L2M2019EnvBaseWrapper(**env_args)
+        env = RandomPoseInitEnv(env)
+        env = ZeroOneActionsEnv(env)
+        env = RewardAugEnv(env)
+        env = MaxAndSkipEnv(env)
     else:
         env = gym.envs.make(env_name)
         env.seed(seed+subrank if seed is not None else None)
@@ -78,15 +111,14 @@ def build_env(args, env_args):
         return DummyVecEnv([make_env(i) for i in range(nenv)])
 
 
-
+# --------------------
+# Run train and play
+# --------------------
 
 def main(args, extra_args):
     # configure args for environment and algorithm; update defaults with extra_args
-    env_args = {'model': '2D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2} if args.env=='L2M2019' else None
-    if extra_args is not None and env_args is not None:
-        env_args.update({k: v for k, v in extra_args.__dict__.items() if k in env_args})
-    alg_args = getattr(import_module('algs.' + args.alg), 'defaults')(args.env)
-    alg_args.update({k: v for k, v in extra_args.__dict__.items() if k in alg_args})
+    env_args = get_env_config(args.env, extra_args.__dict__)
+    alg_args = get_alg_config(args.alg, args.env, extra_args.__dict__)
 
     # setup logging
     if args.load_path:
@@ -97,13 +129,7 @@ def main(args, extra_args):
         os.makedirs(args.output_dir)
 
     # print and save config
-    print('Building environment and agent with the following config:')
-    print('Run config:\n' + pprint.pformat(args.__dict__))
-    print('Env config: ' + args.env + (env_args is not None)*('\n' + pprint.pformat(args.__dict__)))
-    print('Alg config: ' + args.alg + '\n' + pprint.pformat(alg_args))
-    save_json(args.__dict__, os.path.join(args.output_dir, 'config_run.json'))
-    if env_args: save_json(env_args, os.path.join(args.output_dir, 'config_env.json'))
-    save_json(alg_args, os.path.join(args.output_dir, 'config_alg.json'))
+    print_and_save_config(args, env_args, alg_args)
 
     # build environment
     env = build_env(args, env_args)

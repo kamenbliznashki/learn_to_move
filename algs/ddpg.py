@@ -28,8 +28,8 @@ class DDPG:
         # 1. networks
         q = Model('q', hidden_sizes=q_hidden_sizes, output_size=1)
         policy = Model('policy', hidden_sizes=policy_hidden_sizes, output_size=action_shape[0], output_activation=tf.tanh)
-        q_target = Model('q', hidden_sizes=q_hidden_sizes, output_size=1)
-        policy_target = Model('policy', hidden_sizes=policy_hidden_sizes, output_size=action_shape[0], output_activation=tf.tanh)
+        q_target = Model('q_target', hidden_sizes=q_hidden_sizes, output_size=1)
+        policy_target = Model('policy_target', hidden_sizes=policy_hidden_sizes, output_size=action_shape[0], output_activation=tf.tanh)
 
         # current q values
         q_value = q(tf.concat([self.obs_ph, self.actions_ph], 1))
@@ -52,7 +52,8 @@ class DDPG:
         policy_optimizer = tf.train.AdamOptimizer(policy_lr, name='policy_optimizer')
         #   main train ops
         self.q_train_op = q_optimizer.minimize(q_loss, var_list=tf.trainable_variables('q'))
-        self.policy_train_op = policy_optimizer.minimize(policy_loss, var_list=tf.trainable_variables('policy'))
+        self.policy_train_op = policy_optimizer.minimize(policy_loss, var_list=tf.trainable_variables('policy'),
+                                                            global_step=tf.train.get_or_create_global_step())
         #   target update ops
         self.target_update_ops = tf.group(self.create_target_update_op(q, q_target) +
                                           self.create_target_update_op(policy, policy_target))
@@ -121,7 +122,6 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
     episode_rewards_history = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
-    last_episode_rewards = 0
     n_episodes = 0
 
     obs = env.reset()
@@ -132,7 +132,8 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         # sample action -> step env -> store transition
         actions = agent.get_actions(obs, expl_noise)
         next_obs, r, done, _ = env.step(actions)
-        memory.store_transition(obs, actions, r, done, next_obs)
+        done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
+        memory.store_transition(obs, actions, r, done_bool, next_obs)
         obs = next_obs
 
         # keep records

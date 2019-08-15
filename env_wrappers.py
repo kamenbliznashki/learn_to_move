@@ -55,36 +55,77 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
         self._visualize = new_state
 
 
+class RandomPoseInitEnv(gym.Wrapper):
+    def reset(self, **kwargs):
+        pose = np.array([np.random.uniform(-1,1),          # forward speed
+                         np.random.uniform(-1,1),          # righward speed
+                         np.random.uniform(0.9, 0.94),     # pelvis_height
+                         np.random.uniform(-0.25, 0.25),   # trunk lean
+                         0*np.pi/180,                      # [right] hip adduct
+                         np.random.uniform(-1,1),          # hip flex
+                         np.random.uniform(-1,0),          # knee extend
+                         np.random.uniform(-0.935,0.935),  # ankle flex
+                         0*np.pi/180,                      # [left] hip adduct
+                         np.random.uniform(-1,1),          # hip flex
+                         np.random.uniform(-1,0),          # knee extend
+                         np.random.uniform(-0.935,0.935)]) # ankle flex
+        return self.env.reset(init_pose=pose, **kwargs)
+
+
+class ZeroOneActionsEnv(gym.Wrapper):
+    """ transform action from tanh policies in (-1,1) to (0,1) """
+    def step(self, action, **kwargs):
+        return self.env.step((action + 1)/2, **kwargs)
+
+class RewardAugEnv(gym.Wrapper):
+    def step(self, action, **kwargs):
+        o, r, d, i = self.env.step(action, **kwargs)
+
+        # if pelvis below 0.6, OsimEnv returns done; penalize this
+#        pelvis_height = o['pelvis']['height'] if isinstance(o, dict) else o[242]    # for position of pelvis hight is obs see L2M2019Env.get_observation()
+#        if pelvis_height < 0.6:
+#            r += -10
+
+        # reward speed in the x direction
+        r += max(0, o['pelvis']['vel'][0] if isinstance(o, dict) else o[245])
+
+        # expose osim model footstep penalties for effort and deviation from velocity target while not making a step
+        if not self.env.footstep['new']:
+            r_footstep_v = - self.env.d_reward['weight']['v_tgt']*np.linalg.norm(self.env.d_reward['footstep']['del_v'])/self.env.LENGTH0
+#            r_footstep_e = - self.env.d_reward['weight']['effort']*self.env.d_reward['footstep']['effort']
+            r += r_footstep_v #+ r_footstep_e
+
+        return o, r, d, i
 
 class MaxAndSkipEnv(gym.Wrapper):
-    def __init__(self, env=None, skip=4):
+    def __init__(self, env=None, n_skips=4):
         """Return only every `skip`-th frame"""
-        super(MaxAndSkipEnv, self).__init__(env)
+        super().__init__(env)
         # most recent raw observations (for max pooling across time steps)
-        self._obs_buffer = deque(maxlen=2)
-        self._skip       = skip
+        self.obs_buffer = deque(maxlen=4)
+        self.n_skips       = n_skips
 
     def step(self, action):
-        total_reward = 0.0
+        total_reward = 0
         done = None
-        for _ in range(self._skip):
+        for _ in range(self.n_skips):
             obs, reward, done, info = self.env.step(action)
-            self._obs_buffer.append(obs)
+            self.obs_buffer.append(obs)
             total_reward += reward
             if done:
                 break
 
         # TODO  -- max on all elements of the state space?; perhaps on the actuation strenght?
         #       -- test with/without max
-        max_frame = np.max(np.stack(self._obs_buffer), axis=0)
+        max_frame = obs#np.max(np.stack(self.obs_buffer), axis=0)
 
         return max_frame, total_reward, done, info
 
-    def reset(self):
+    def reset(self, **kwargs):
         """Clear past frame buffer and init. to first obs. from inner env."""
-        self._obs_buffer.clear()
-        obs = self.env.reset()
-        self._obs_buffer.append(obs)
+        self.obs_buffer.clear()
+        obs = self.env.reset(**kwargs)
+        self.obs_buffer.append(obs)
         return obs
 
 

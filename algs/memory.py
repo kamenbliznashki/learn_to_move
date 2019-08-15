@@ -56,3 +56,32 @@ class Memory:
             next_obs, r, done, _ = env.step(actions)
             self.store_transition(self.current_obs, actions, r, done, next_obs)
             self.current_obs = next_obs
+
+
+class SymmetricMemory(Memory):
+    def store_transition(self, obs, actions, rewards, dones, next_obs, training=True):
+        # add experience to buffer
+        super().store_transition(obs, actions, rewards, dones, next_obs, training)
+
+        # add mirrored `experience` to buffer -- state and action mirred along left-right symmetry
+        #   flip actions for muscles on left and right leg
+        m_actions = actions.copy()
+        m_actions = np.flipud(m_actions.reshape(2,11)).flatten()   # ie [0,1,2,3] --> [2,3,0,1]
+        #   flip obs for left and right leg -- for indexing from the observations dict to list see L2M2019Env.get_observation()
+        m_obs = obs.copy()
+        m_next_obs = next_obs.copy()
+        leg_obs = m_obs[251:]
+        leg_next_obs = m_next_obs[251:]
+        m_obs[251:] = np.flipup(leg_obs.reshape(2,-1)).flatten()
+        m_next_obs[251:] = np.flipup(leg_next_obs.reshape(2,-1)).flatten()
+        #   flip sign of pelvis roll (right->left)
+        m_obs[244] = - np.sign(m_obs[244]) * np.abs(m_obs[244])
+        #   flip sign of pelvis y-axis velocity
+        m_obs[246] = - np.sign(m_obs[246]) * np.abs(m_obs[246])
+        #   flip sign of pelvis roll and yaw angular velocities
+        m_obs[249:251] = - np.sign(m_obs[249:251]) * np.abs(m_obs[249:251])
+        #   save mirred to buffer
+        super().store_transition(m_obs, m_actions, rewards, dones, m_next_obs, training)
+        del m_actions, m_obs
+
+

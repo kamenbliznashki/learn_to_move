@@ -101,7 +101,6 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
     episode_rewards_history = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
-    last_episode_rewards = 0
     n_episodes = 0
 
     obs = env.reset()
