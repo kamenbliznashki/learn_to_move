@@ -46,7 +46,7 @@ class Memory:
         idxs = np.random.randint(0, self.size, batch_size)
         return Transition(*np.atleast_2d(self.obs[idxs], self.actions[idxs], self.rewards[idxs], self.dones[idxs], self.next_obs[idxs]))
 
-    def initialize(self, env, n_prefill_steps=100):
+    def initialize(self, env, n_prefill_steps=1000, training=True):
         # prefill memory using uniform exploration
         if self.current_obs is None:
             self.current_obs = env.reset()
@@ -54,7 +54,7 @@ class Memory:
         for _ in range(n_prefill_steps):
             actions = np.random.uniform(-1, 1, (env.num_envs,) + self.action_shape)
             next_obs, r, done, _ = env.step(actions)
-            self.store_transition(self.current_obs, actions, r, done, next_obs)
+            self.store_transition(self.current_obs, actions, r, done, next_obs, training)
             self.current_obs = next_obs
 
 

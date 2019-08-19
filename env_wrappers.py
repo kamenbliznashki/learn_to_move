@@ -19,9 +19,10 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
     """ Wrapper to move certain class variable to instance variables """
     def __init__(self, **kwargs):
         self._model = kwargs.pop('model', '3D')
-        self._osim_model = None
+        self._stepsize = kwargs.pop('stepsize', 0.01)
         self._visualize = kwargs.get('visualize', False)
-        super().__init__(**kwargs)
+        self._osim_model = None
+        super().__init__(**kwargs)  # NOTE -- L2M2019Env at init calls get_model_key() which pulls self.model; -> setting _model here initializes the model to 2D or 3D
 
     @property
     def model(self):
@@ -54,13 +55,62 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
         assert isinstance(new_state, bool)
         self._visualize = new_state
 
+    # match evaluation env
+    def step(self, action):
+        return super().step(action, project=True, obs_as_dict=True)
+
+    def reset(self, **kwargs):
+        obs_as_dict = kwargs.pop('obs_as_dict', True)
+        return super().reset(obs_as_dict=obs_as_dict, **kwargs)
+
+class Obs2VecEnv(gym.Wrapper):
+    def obs2vec(self, obs_dict):
+        # Augmented environment from the L2R challenge
+        res = []
+
+        # target velocity field (in body frame)
+        res += obs_dict['v_tgt_field'].flatten().tolist()
+
+        res.append(obs_dict['pelvis']['height'])
+        res.append(obs_dict['pelvis']['pitch'])
+        res.append(obs_dict['pelvis']['roll'])
+        res.append(obs_dict['pelvis']['vel'][0]/self.LENGTH0)
+        res.append(obs_dict['pelvis']['vel'][1]/self.LENGTH0)
+        res.append(obs_dict['pelvis']['vel'][2]/self.LENGTH0)
+        res.append(obs_dict['pelvis']['vel'][3])
+        res.append(obs_dict['pelvis']['vel'][4])
+        res.append(obs_dict['pelvis']['vel'][5])
+
+        for leg in ['r_leg', 'l_leg']:
+            res += obs_dict[leg]['ground_reaction_forces']
+            res.append(obs_dict[leg]['joint']['hip_abd'])
+            res.append(obs_dict[leg]['joint']['hip'])
+            res.append(obs_dict[leg]['joint']['knee'])
+            res.append(obs_dict[leg]['joint']['ankle'])
+            res.append(obs_dict[leg]['d_joint']['hip_abd'])
+            res.append(obs_dict[leg]['d_joint']['hip'])
+            res.append(obs_dict[leg]['d_joint']['knee'])
+            res.append(obs_dict[leg]['d_joint']['ankle'])
+            for MUS in ['HAB', 'HAD', 'HFL', 'GLU', 'HAM', 'RF', 'VAS', 'BFSH', 'GAS', 'SOL', 'TA']:
+                res.append(obs_dict[leg][MUS]['f'])
+                res.append(obs_dict[leg][MUS]['l'])
+                res.append(obs_dict[leg][MUS]['v'])
+        return res
+
+    def step(self, action):
+        o, r, d, i = self.env.step(action)
+        return self.obs2vec(o), r, d, i
+
+    def reset(self, **kwargs):
+        o = self.env.reset(**kwargs)
+        return self.obs2vec(o)
 
 class RandomPoseInitEnv(gym.Wrapper):
     def reset(self, **kwargs):
-        pose = np.array([np.random.uniform(-1,1),          # forward speed
-                         np.random.uniform(-1,1),          # righward speed
-                         np.random.uniform(0.9, 0.94),     # pelvis_height
-                         np.random.uniform(-0.25, 0.25),   # trunk lean
+        pose = np.array([np.random.uniform(0,1),          # forward speed
+                         0,#np.random.uniform(-1,1),          # righward speed
+                         np.random.uniform(0.94, 0.96),    # pelvis_height
+                         0,#np.random.uniform(-0.25, 0.25),   # trunk lean
                          0*np.pi/180,                      # [right] hip adduct
                          np.random.uniform(-1,1),          # hip flex
                          np.random.uniform(-1,0),          # knee extend
@@ -71,29 +121,63 @@ class RandomPoseInitEnv(gym.Wrapper):
                          np.random.uniform(-0.935,0.935)]) # ankle flex
         return self.env.reset(init_pose=pose, **kwargs)
 
-
 class ZeroOneActionsEnv(gym.Wrapper):
     """ transform action from tanh policies in (-1,1) to (0,1) """
-    def step(self, action, **kwargs):
-        return self.env.step((action + 1)/2, **kwargs)
+    def __init__(self, env, **kwargs):
+        super().__init__(env=env, **kwargs)
+        self.env.action_space.low -= 1
 
-class RewardAugEnv(gym.Wrapper):
-    def step(self, action, **kwargs):
-        o, r, d, i = self.env.step(action, **kwargs)
+    def step(self, action):
+        # input in [-1,1], output in [0,1]
+        return self.env.step((action + 1)/2)
+
+class PoolVTgtEnv(gym.Wrapper):
+    def __init__(self, env=None, **kwargs):
+        super().__init__(env, **kwargs)
+        obs_dim = env.observation_space.shape[0] - 2*11*11 + 2*3*3
+        self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
+
+    def pool_vtgt(self, obs):
+        pooled_vtgt = obs['v_tgt_field'].reshape(2,11,11)[:,::2,::2].reshape(2,3,2,3,2).mean((2,4))  # subsample and 2x2 avg pool
+        obs['v_tgt_field'] = pooled_vtgt
+        return obs
+
+    def step(self, action):
+        o, r, d, i = self.env.step(action)
+        return self.pool_vtgt(o), r, d, i
+
+    def reset(self, **kwargs):
+        o = self.env.reset(**kwargs)
+        return self.pool_vtgt(o)
+
+class FallPenaltyEnv(gym.Wrapper):
+    def step(self, action):
+        o, r, d, i = self.env.step(action)
 
         # if pelvis below 0.6, OsimEnv returns done; penalize this
-#        pelvis_height = o['pelvis']['height'] if isinstance(o, dict) else o[242]    # for position of pelvis hight is obs see L2M2019Env.get_observation()
-#        if pelvis_height < 0.6:
-#            r += -10
+        if o['pelvis']['height'] < 0.6:
+            r -= 10
 
-        # reward speed in the x direction
-        r += max(0, o['pelvis']['vel'][0] if isinstance(o, dict) else o[245])
+        return o, r, d, i
 
-        # expose osim model footstep penalties for effort and deviation from velocity target while not making a step
-        if not self.env.footstep['new']:
-            r_footstep_v = - self.env.d_reward['weight']['v_tgt']*np.linalg.norm(self.env.d_reward['footstep']['del_v'])/self.env.LENGTH0
-#            r_footstep_e = - self.env.d_reward['weight']['effort']*self.env.d_reward['footstep']['effort']
-            r += r_footstep_v #+ r_footstep_e
+class RewardAugEnv(gym.Wrapper):
+    def step(self, action):
+        o, r, d, i = self.env.step(action)
+
+        # distance from vtgt min
+        def distance_from_min(grid):
+            x, y = np.nonzero(grid == np.min(grid))
+            x = x[0] - grid.shape[0]//2
+            y = y[0] - grid.shape[1]//2
+            return np.sqrt(x**2 + y**2)
+
+        x, y = np.asarray(o['v_tgt_field'])
+        dist = np.mean([distance_from_min(x), distance_from_min(y)])
+        r += 10 * max(0, np.log(dist))
+
+        # if pelvis below 0.6, OsimEnv returns done; penalize this
+        if o['pelvis']['height'] < 0.6:
+            r -= 10
 
         return o, r, d, i
 
@@ -129,19 +213,6 @@ class MaxAndSkipEnv(gym.Wrapper):
         return obs
 
 
-# TODO 
-# prevent agent from falling through the surface
-
-
-class PelvisAboveGroundEnv(gym.Wrapper):
-    def step(self, action, **kwargs):
-        kwargs.pop('obs_as_dict', None)
-        obs, reward, done, info = self.env.step(action, obs_as_dict=True, **kwargs)
-        if obs['pelvis']['height'] <= 0.0001:
-            done = True
-        return obs, reward, done, info
-
-
 
 # --------------------
 # Monitoring wrappers
@@ -166,7 +237,7 @@ class Monitor(gym.core.Wrapper):
             # write to csv
             header = {'t_start': time.strftime("%Y-%m-%d_%H-%M-%S"), 'model': env.model}
             header = '# {} \n'.format(header)
-            self.f = open(filename, "wt")
+            self.f = open(filename, "at")
             self.f.write(header)
             self.logger = csv.DictWriter(self.f, fieldnames=('return', 'length', 'time'))
             self.logger.writeheader()

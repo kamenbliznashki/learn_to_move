@@ -5,8 +5,12 @@ import numpy as np
 import tensorflow as tf
 from tabulate import tabulate
 
+from mpi4py import MPI
+
 from algs.memory import Memory
 from algs.models import GaussianPolicy, Model
+from mpi_adam import MpiAdam, flatgrad
+from mpi_utils import mpi_moments
 import logger
 
 
@@ -16,6 +20,8 @@ class DDPG:
         self.min_action = min_action
         self.max_action = max_action
         self.tau = tau
+        self.policy_lr = policy_lr
+        self.q_lr = q_lr
 
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
@@ -24,36 +30,57 @@ class DDPG:
         self.dones_ph = tf.placeholder(tf.float32, [None, 1], name='dones')
         self.next_obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='next_obs')
 
+        # obs indices to pass to policy and q function
+        # policy gets v_tgt_field, pelvis hight pitch roll, joints, fiber lengths
+#        policy_idxs = [*list(range(3)), *list(range(12,16)), *list(range(20,20+3*11))[1::3], *list(range(20+3*11+3,20+3*11+3+4)), \
+#                        *list(range(20+3*11+3+4+4, 20+2*3*11+3+4+4))[1::3]]
+#        policy_idxs = np.asarray(policy_idxs) + 2*3*3
+#        policy_idxs = policy_idxs.tolist()
+
         # build graph
         # 1. networks
-        q = Model('q', hidden_sizes=q_hidden_sizes, output_size=1)
-        policy = Model('policy', hidden_sizes=policy_hidden_sizes, output_size=action_shape[0], output_activation=tf.tanh)
-        q_target = Model('q_target', hidden_sizes=q_hidden_sizes, output_size=1)
-        policy_target = Model('policy_target', hidden_sizes=policy_hidden_sizes, output_size=action_shape[0], output_activation=tf.tanh)
+        q = Model('q', hidden_sizes=q_hidden_sizes, activation=tf.nn.selu, output_size=1)
+        q_target = Model('q_target', hidden_sizes=q_hidden_sizes, activation=tf.nn.selu, output_size=1)
+        policy = Model('policy', hidden_sizes=policy_hidden_sizes, activation=tf.tanh, output_size=action_shape[0],
+                            output_activation=tf.tanh)
+        policy_target = Model('policy_target', hidden_sizes=policy_hidden_sizes, activation=tf.tanh,
+                                output_size=action_shape[0], output_activation=tf.tanh)
+        embed_v_tgt = Model('vtgt_embed', hidden_sizes=[256, 256], output_size=64, activation=tf.tanh, output_activation=tf.tanh)
+
+        # split obs from v_tgt_field and embed vtgt
+        vtgt = self.obs_ph[:,:2*11*11]
+        next_vtgt = self.next_obs_ph[:,:2*11*11]
+        embedded_vtgt = embed_v_tgt(vtgt)
+        embedded_next_vtgt = embed_v_tgt(next_vtgt)
+        obs = tf.concat([embedded_vtgt, self.obs_ph[:,2*11*11:]], axis=1)
+        next_obs = tf.concat([embedded_next_vtgt, self.next_obs_ph[:,2*11*11:]], axis=1)
 
         # current q values
-        q_value = q(tf.concat([self.obs_ph, self.actions_ph], 1))
+        q_value = q(tf.concat([obs, self.actions_ph], 1))
         # q values at policy action
-        self.actions = max_action * policy(self.obs_ph)
-        q_value_at_policy_action = q(tf.concat([self.obs_ph, self.actions], 1))
+        self.actions = max_action * policy(obs)
+#        self.actions = max_action * policy(tf.gather(self.obs_ph, policy_idxs, axis=1))
+        q_value_at_policy_action = q(tf.concat([obs, self.actions], 1))
 
         # select next action according to the policy_target
-        next_actions = policy_target(self.next_obs_ph)
+        next_actions = policy_target(next_obs)
+#        next_actions = policy_target(tf.gather(self.next_obs_ph, policy_idxs, axis=1))
         # compute q targets
-        q_target_value = q_target(tf.concat([self.next_obs_ph, next_actions], 1))
+        q_target_value = q_target(tf.concat([next_obs, next_actions], 1))
         q_target_value = self.rewards_ph + tf.stop_gradient(discount * q_target_value * (1 - self.dones_ph))
 
         # 2. loss on critics and actor
-        q_loss = tf.losses.mean_squared_error(q_value, q_target_value)
-        policy_loss = - tf.reduce_mean(q_value_at_policy_action)
+        self.q_loss = tf.losses.mean_squared_error(q_value, q_target_value)
+        self.policy_loss = - tf.reduce_mean(q_value_at_policy_action)
 
-        # 3. update ops
-        q_optimizer = tf.train.AdamOptimizer(q_lr, name='q_optimizer')
-        policy_optimizer = tf.train.AdamOptimizer(policy_lr, name='policy_optimizer')
-        #   main train ops
-        self.q_train_op = q_optimizer.minimize(q_loss, var_list=tf.trainable_variables('q'))
-        self.policy_train_op = policy_optimizer.minimize(policy_loss, var_list=tf.trainable_variables('policy'),
-                                                            global_step=tf.train.get_or_create_global_step())
+        # 3. training
+        self.q_grads = flatgrad(self.q_loss, q.trainable_vars)
+        self.q_optimizer = MpiAdam(var_list=q.vars, scale_grad_by_procs=False)
+        self.policy_grads = flatgrad(self.policy_loss, policy.trainable_vars)
+        self.policy_optimizer = MpiAdam(var_list=policy.vars, scale_grad_by_procs=False)
+        self.global_step = tf.train.get_or_create_global_step()
+        world_size = MPI.COMM_WORLD.Get_size()
+        self.update_global_step = tf.assign_add(self.global_step, world_size)
         #   target update ops
         self.target_update_ops = tf.group(self.create_target_update_op(q, q_target) +
                                           self.create_target_update_op(policy, policy_target))
@@ -69,26 +96,30 @@ class DDPG:
         return [tf.assign(t, (1 - self.tau) * t + self.tau * s) for t, s in zip(target.vars, source.vars)]
 
     def initialize(self, sess):
+        tf.train.get_or_create_global_step()
         self.sess = sess
         self.sess.run(tf.global_variables_initializer())
+        self.policy_optimizer.sync()
+        self.q_optimizer.sync()
         self.sess.run(self.target_init_ops)
 
     def get_actions(self, obs, expl_noise=0):
         actions = self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
         if expl_noise != 0:
-            actions += np.random.normal(0, expl_noise, actions.shape).clip(self.min_action, self.max_action)
+            actions += np.random.normal(0, expl_noise, actions.shape)
+            actions = np.clip(actions, self.min_action, self.max_action)
         return actions
 
     def update_target_net(self):
         self.sess.run(self.target_update_ops)
 
-    def train_critic(self, batch):
-        self.sess.run(self.q_train_op, {self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards, 
-                                         self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
-
-    def train_actor(self, batch):
-        self.sess.run(self.policy_train_op, {self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
-                                              self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
+    def train(self, batch):
+        policy_grads, policy_loss, q_grads, q_loss, _ = self.sess.run(
+                [self.policy_grads, self.policy_loss, self.q_grads, self.q_loss, self.update_global_step],
+                feed_dict={self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
+                           self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
+        self.policy_optimizer.update(policy_grads, stepsize=self.policy_lr)
+        self.q_optimizer.update(q_grads, stepsize=self.q_lr)
 
 
 def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
@@ -99,8 +130,8 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
     reward_scale = alg_args.pop('reward_scale', 1.)
 
-    np.random.seed(seed)
-    tf.set_random_seed(seed)
+    np.random.seed(int(seed + 1e6*args.rank))
+    tf.set_random_seed(int(seed + 1e6*args.rank))
 
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape, reward_scale)
     agent = DDPG(env.observation_space.shape, env.action_space.shape, env.action_space.low[0], env.action_space.high[0], **alg_args)
@@ -110,7 +141,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     agent.initialize(sess)
     saver = tf.train.Saver()
     sess.graph.finalize()
-    memory.initialize(env, n_prefill_steps)
+    memory.initialize(env, n_prefill_steps, training=not args.load_path)
     obs = env.reset()
 
     # setup tracking
@@ -153,27 +184,38 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
 
         # train
         batch = memory.sample(batch_size)
-        agent.train_critic(batch)
-        agent.train_actor(batch)
+        agent.train(batch)
         agent.update_target_net()
 
         # save
-        if t % args.save_interval == 0:
+        if t % args.save_interval == 0 and args.rank == 0:
             saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
 
         # log stats
         if t % args.log_interval == 0:
+            ep_rewards_mean, ep_rewards_std, _ = mpi_moments(episode_rewards_history)
+            ep_lengths_mean, ep_lengths_std, _ = mpi_moments(episode_lengths_history)
+            _, _, n_episodes_count = mpi_moments([n_episodes])
             toc = time.time()
             stats['timestep'] = t
-            stats['episodes'] = n_episodes
-            stats['steps_per_second'] = args.log_interval / (toc - tic)
-            stats['fps'] = env.num_envs * batch_size / (toc - tic)
-            stats['avg_return'] = np.mean(episode_rewards_history)
-            stats['std_return'] = np.std(episode_rewards_history)
-            stats['avg_episode_length'] = np.mean(episode_lengths_history)
-            stats['std_episode_length'] = np.std(episode_lengths_history)
-            logger.save_csv(stats, args.output_dir + '/log.csv')
-            print(tabulate(stats.items(), tablefmt='rst'))
+            stats['policy step'] = args.world_size * t
+            stats['episodes'] = n_episodes_count
+            stats['steps_per_second'] = args.world_size * args.log_interval / (toc - tic)
+            stats['fps'] = args.world_size * env.num_envs * batch_size / (toc - tic)
+            stats['avg_return'] = ep_rewards_mean
+            stats['std_return'] = ep_rewards_std
+            stats['avg_episode_length'] = ep_lengths_mean
+            stats['std_episode_length'] = ep_lengths_std
+            if args.rank == 0:
+                logger.save_csv(stats, args.output_dir + '/log.csv')
+                print(tabulate(stats.items(), tablefmt='rst'))
+
+        # different threads have different seeds
+        local_uniform = np.random.uniform(size=(1,))
+        root_uniform = local_uniform.copy()
+        MPI.COMM_WORLD.Bcast(root_uniform, root=0)
+        if args.rank != 0:
+            assert local_uniform[0] != root_uniform[0], '{} vs {}'.format(local_uniform[0], root_uniform[0])
 
     return agent
 
@@ -184,14 +226,14 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
 
 def defaults(env_name=None):
     if env_name == 'L2M2019':
-        return {'policy_hidden_sizes': (400, 300),
-                'q_hidden_sizes': (400, 300),
+        return {'policy_hidden_sizes': (256, 256),
+                'q_hidden_sizes': (256, 256),
                 'expl_noise': 0.1,
-                'discount': 0.99,
+                'discount': 0.96,
                 'tau': 0.005,
                 'q_lr': 1e-3,
                 'policy_lr': 1e-3,
-                'batch_size': 64,
+                'batch_size': 128,
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': 1000,
                 'reward_scale': 1}

@@ -119,7 +119,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     agent.initialize(sess)
     saver = tf.train.Saver()
     sess.graph.finalize()
-    memory.initialize(env, n_prefill_steps)
+    memory.initialize(env, n_prefill_steps, training=not args.load_path)
     obs = env.reset()
 
     # setup tracking
@@ -194,17 +194,17 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
 
 def defaults(env_name=None):
     if env_name == 'L2M2019':
-        return {'policy_hidden_sizes': (400, 300),
-                'q_hidden_sizes': (400, 300),
-                'expl_noise': 0.1,
-                'policy_noise': 0.2,
+        return {'policy_hidden_sizes': (128, 128),
+                'q_hidden_sizes': (128, 128),
+                'expl_noise': 0.05,
+                'policy_noise': 0.1,
                 'noise_clip': 0.5,
-                'discount': 0.99,
+                'discount': 0.96,
                 'tau': 0.005,
-                'q_lr': 1e-3,
-                'policy_lr': 1e-3,
+                'q_lr': 1e-4,
+                'policy_lr': 1e-4,
                 'policy_update_freq': 2,
-                'batch_size': 100,
+                'batch_size': 256,
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': 1000,
                 'reward_scale': 1}

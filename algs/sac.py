@@ -89,7 +89,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     agent.initialize(sess)
     saver = tf.train.Saver()
     sess.graph.finalize()
-    memory.initialize(env)
+    memory.initialize(env, training=not args.load_path)
     obs = env.reset()
 
     # setup tracking
