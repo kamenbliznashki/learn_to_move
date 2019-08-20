@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 from tabulate import tabulate
 
-from algs.memory import Memory
+from algs.memory import Memory, SymmetricMemory
 from algs.models import GaussianPolicy, Model
 import logger
 
@@ -37,10 +37,10 @@ class SAC:
         target_v = q_value_at_policy_action - alpha * log_pis
         value_function_loss = tf.losses.mean_squared_error(v, target_v)
         #   q value loss term
-        q_value_at_memory_action = q_function(tf.concat([self.obs_ph, self.actions_ph], 1))
+        self.q_value_at_memory_action = q_function(tf.concat([self.obs_ph, self.actions_ph], 1))
         target_next_v = target_value_function(self.next_obs_ph) * (1 - self.dones_ph)
         target_q = self.rewards_ph + discount * target_next_v
-        q_value_loss = tf.losses.mean_squared_error(q_value_at_memory_action, target_q)
+        q_value_loss = tf.losses.mean_squared_error(self.q_value_at_memory_action, target_q)
         #   q_function2 loss
         q_value2_at_memory_action = q_function2(tf.concat([self.obs_ph, self.actions_ph], 1))
         q_value2_loss = tf.losses.mean_squared_error(q_value2_at_memory_action, target_q)
@@ -66,6 +66,9 @@ class SAC:
         actions = self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
         return actions
 
+    def get_action_value(self, obs, actions):
+        return self.sess.run(self.q_value_at_memory_action, {self.obs_ph: obs, self.actions_ph: actions})
+
     def update_target_net(self):
         self.sess.run(self.target_update_ops)
 
@@ -82,7 +85,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
     reward_scale = alg_args.pop('reward_scale', 1.)
     batch_size = alg_args.pop('batch_size', 256)
-    memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape, reward_scale)
+    memory = SymmetricMemory(int(max_memory_size), env.observation_space.shape, env.action_space.shape, reward_scale)
     agent = SAC(env.observation_space.shape, env.action_space.shape, **alg_args)
 
     # initialize session, agent, memory, environment
@@ -174,7 +177,7 @@ def defaults(env_name=None):
                 'value_hidden_sizes': (128, 128),
                 'q_hidden_sizes': (128, 128),
                 'alpha': 0.2,
-                'discount': 0.99,
+                'discount': 0.96,
                 'tau': 0.01,
                 'lr': 1e-3,
                 'batch_size': 256,

@@ -59,7 +59,7 @@ def get_alg_config(alg, env, extra_args=None):
 def get_env_config(env, extra_args=None):
     env_args = None
     if env == 'L2M2019':
-        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2, 'stepsize': 0.1}
+        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2, 'stepsize': 0.04}
     if extra_args is not None and env_args is not None:
         env_args.update({k: v for k, v in extra_args.items() if k in env_args})
     return env_args
@@ -152,14 +152,22 @@ def main(args, extra_args):
         env = make_single_env(args.env, args.rank, args.n_env + 100, args.seed, env_args, args.output_dir)
         obs = env.reset()
         episode_rewards = 0
+        episode_steps = 0
         while True:
             action = agent.get_actions(obs)
-            obs, rew, done, _ = env.step(action.flatten())
+            next_obs, rew, done, _ = env.step(action.flatten())
             episode_rewards += rew
+            episode_steps += 1
+            print('q value: {:.4f}; reward: {:.2f}; reward so far: {:.2f}'.format(
+                agent.get_action_value(np.atleast_2d(obs), action).squeeze(), rew, episode_rewards))
+            obs = next_obs
             env.render()
+#            i = input('press key to continue ...')
+            time.sleep(0.5)
             if done:
-                print('Episode rewards: ', episode_rewards)
+                print('Episode length {}; cumulative reward: {:.2f}'.format(episode_steps, episode_rewards))
                 episode_rewards = 0
+                episode_steps = 0
                 obs = env.reset()
 
     env.close()

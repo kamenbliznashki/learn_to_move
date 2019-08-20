@@ -59,29 +59,47 @@ class Memory:
             self.store_transition(self.current_obs, actions, r, done, next_obs, training)
             self.current_obs = next_obs
 
+        print('Memory initialized.')
 
 class SymmetricMemory(Memory):
+
+    # NOTE --- assumes reward is left-right symmetric
+
     def store_transition(self, obs, actions, rewards, dones, next_obs, training=True):
         # add experience to buffer
         super().store_transition(obs, actions, rewards, dones, next_obs, training)
 
+        # batch_size
+        B = obs.shape[0]
+
         # add mirrored `experience` to buffer -- state and action mirred along left-right symmetry
-        #   flip actions for muscles on left and right leg
+        #   flip body obs - legts, roll/yaw, y vel and roll/yaw angular velocities -- for indexing from the observations dict to list see L2M2019Env.get_observation()
+
+        #   1. flip actions for muscles on left and right leg
         m_actions = actions.copy()
-        m_actions = np.flipud(m_actions.reshape(2,11)).flatten()   # ie [0,1,2,3] --> [2,3,0,1]
-        #   flip obs for left and right leg -- for indexing from the observations dict to list see L2M2019Env.get_observation()
+        m_actions = np.flipud(m_actions.reshape(B,2,11)).reshape(B,-1)   # [0,1,2,3] -> [[0,1],[2,3]] -> [[2,3],[0,1]] -> [2,3,0,1]
+
+        #   copy obs then edit in place
         m_obs = obs.copy()
         m_next_obs = next_obs.copy()
-        leg_obs = m_obs[251:]
-        leg_next_obs = m_next_obs[251:]
-        m_obs[251:] = np.flipup(leg_obs.reshape(2,-1)).flatten()
-        m_next_obs[251:] = np.flipup(leg_next_obs.reshape(2,-1)).flatten()
-        #   flip sign of pelvis roll (right->left)
-        m_obs[244] = - np.sign(m_obs[244]) * np.abs(m_obs[244])
-        #   flip sign of pelvis y-axis velocity
-        m_obs[246] = - np.sign(m_obs[246]) * np.abs(m_obs[246])
-        #   flip sign of pelvis roll and yaw angular velocities
-        m_obs[249:251] = - np.sign(m_obs[249:251]) * np.abs(m_obs[249:251])
+
+        # NOTE -- if state contains the v_tgt_field, body obs start at index 242
+        body_obs = m_obs#[242:]
+        body_next_obs = m_next_obs#[242:]
+
+        pelvis_obs = body_obs[:,:9]
+        pelvis_next_obs = body_next_obs[:,:9]
+        leg_obs = body_obs[:,9:]
+        leg_next_obs = body_next_obs[:,9:]
+
+        #   2. flip legs
+        leg_obs = np.flipud(leg_obs.reshape(B,2,-1)).flatten()
+        leg_next_obs = np.flipud(leg_next_obs.reshape(B,2,-1)).flatten()
+
+        #   3. flip sign of pelvis roll (right->left), y-velocity, roll, yaw
+        pelvis_obs[:,[2,4,7,8]] *= -1
+        pelvis_next_obs[:,[2,4,7,8]] *= -1
+
         #   save mirred to buffer
         super().store_transition(m_obs, m_actions, rewards, dones, m_next_obs, training)
         del m_actions, m_obs

@@ -10,6 +10,7 @@ import numpy as np
 
 import gym
 from collections import deque
+import tabulate
 
 from osim.env import L2M2019Env, OsimModel
 
@@ -183,6 +184,13 @@ class RewardAugEnv(gym.Wrapper):
         rewards['pitch'] = 0.1 if pitch < eps else -pitch
         rewards['roll'] = 0.1 if roll < eps  else -roll
         rewards['yaw'] = 0.1 if yaw < 0.3 else -sigmoid(yaw)
+        ang_vel = np.sum(np.asarray(o['pelvis']['vel'][3:])**2)
+        rewards['ang_vel'] = 0.1 if ang_vel < 2 else -sigmoid(ang_vel)
+        x_vel = o['pelvis']['vel'][0]**2
+        y_vel = o['pelvis']['vel'][1]**2
+#        print('vel**2: ', np.round(np.asarray(o['pelvis']['vel'])**2, 2))
+        rewards['x_vel'] = sigmoid(x_vel - 5)
+        rewards['y_vel'] = 0.1 if y_vel < 0.1 else -sigmoid(y_vel)
 #        rewards['yaw_vel'] = - sigmoid(yaw_vel - 5)
 
 #        # distance from vtgt min
@@ -196,13 +204,17 @@ class RewardAugEnv(gym.Wrapper):
 #        dist = np.mean([distance_from_min(x), distance_from_min(y)])
 #        rewards['dist'] = 0.1 * dist
 
-        speed = np.sqrt(o['pelvis']['vel'][0]**2 + o['pelvis']['vel'][1]**2)
-        rewards['speed'] = sigmoid(speed - 5)
+#        speed = np.sqrt(o['pelvis']['vel'][0]**2 + o['pelvis']['vel'][1]**2)
+#        rewards['speed'] = speed#sigmoid(speed - 5)
+
+        ground_rf = np.sum(np.asarray([o['l_leg']['ground_reaction_forces'], o['r_leg']['ground_reaction_forces']]))
+        rewards['ground_rf'] = 0 if ground_rf < 1 else -sigmoid(ground_rf)
+
 
         # if pelvis below 0.6, OsimEnv returns done; penalize this
-        rewards['height'] = 0.1 if o['pelvis']['height'] > 0.6 else -1
+        rewards['height'] = 0.1 if o['pelvis']['height'] > 0.6 else -3
 
-#        print('Augmented rewards: {}'.format(rewards))
+#        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
         r += sum(rewards.values())
         return o, r, d, i
 
@@ -262,11 +274,12 @@ class Monitor(gym.core.Wrapper):
             # write to csv
             header = {'t_start': time.strftime("%Y-%m-%d_%H-%M-%S"), 'model': env.model}
             header = '# {} \n'.format(header)
+            exists = osp.exists(filename)
             self.f = open(filename, "at")
-            if not osp.exists(filename):
-                self.f.write(header)
             self.logger = csv.DictWriter(self.f, fieldnames=('return', 'length', 'time'))
-            self.logger.writeheader()
+            if not exists:
+                self.f.write(header)
+                self.logger.writeheader()
             self.f.flush()
         else:
             self.f = None
