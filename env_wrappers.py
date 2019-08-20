@@ -114,19 +114,49 @@ class Obs2VecEnv(gym.Wrapper):
 
 class RandomPoseInitEnv(gym.Wrapper):
     def reset(self, **kwargs):
-        pose = np.array([np.random.uniform(0,1),          # forward speed
-                         0,#np.random.uniform(-1,1),          # righward speed
-                         np.random.uniform(0.94, 0.96),    # pelvis_height
-                         0,#np.random.uniform(-0.25, 0.25),   # trunk lean
-                         0*np.pi/180,                      # [right] hip adduct
-                         np.random.uniform(-1,1),          # hip flex
-                         np.random.uniform(-1,0),          # knee extend
-                         np.random.uniform(-0.935,0.935),  # ankle flex
-                         0*np.pi/180,                      # [left] hip adduct
-                         np.random.uniform(-1,1),          # hip flex
-                         np.random.uniform(-1,0),          # knee extend
-                         np.random.uniform(-0.935,0.935)]) # ankle flex
+        y_vel = np.random.uniform(-1,1)
+        leg1 = [np.random.uniform(np.pi/4, 1.25*np.pi/3), -1.5, -1.5, np.random.uniform(-0.935,0.935)]
+        leg2 = [0, np.random.uniform(-0.5, 0.5), np.random.uniform(-0.25, 0.015), np.random.uniform(-0.935,0.935)]
+
+        pose = [np.random.uniform(0.5, 2),
+                y_vel,
+                0.94,
+                np.random.uniform(-0.25, 0.25)]
+
+        if y_vel > 0:
+            pose += leg1 + leg2
+        else:
+            pose += leg2 + leg1
+
+        pose = np.asarray(pose)
+
+#        pose = np.array([np.random.uniform(0,1),          # forward speed
+#                         0,#np.random.uniform(-1,1),          # righward speed
+#                         np.random.uniform(0.94, 0.96),    # pelvis_height
+#                         0,#np.random.uniform(-0.25, 0.25),   # trunk lean
+#                         0*np.pi/180,                      # [right] hip adduct
+#                         np.random.uniform(-1,1),          # hip flex
+#                         np.random.uniform(-1,0),          # knee extend
+#                         np.random.uniform(-0.935,0.935),  # ankle flex
+#                         0*np.pi/180,                      # [left] hip adduct
+#                         np.random.uniform(-1,1),          # hip flex
+#                         np.random.uniform(-1,0),          # knee extend
+#                         np.random.uniform(-0.935,0.935)]) # ankle flex
         return self.env.reset(init_pose=pose, **kwargs)
+
+class NoopResetEnv(gym.Wrapper):
+    def __init__(self, env=None, noop_max=8):
+        super().__init__(env)
+        self.noop_max = noop_max
+        self.noop_action = np.zeros_like(self.env.action_space.low)
+
+    def reset(self, **kwargs):
+        self.env.reset()
+        noops = np.random.randint(1, self.noop_max + 1)
+        for _ in range(noops):
+            o, _, _, _ = self.env.step(self.noop_action)
+        return o
+
 
 class ZeroOneActionsEnv(gym.Wrapper):
     """ transform action from tanh policies in (-1,1) to (0,1) """
@@ -186,10 +216,10 @@ class RewardAugEnv(gym.Wrapper):
         rewards['yaw'] = 0.1 if yaw < 0.3 else -sigmoid(yaw)
         ang_vel = np.sum(np.asarray(o['pelvis']['vel'][3:])**2)
         rewards['ang_vel'] = 0.1 if ang_vel < 2 else -sigmoid(ang_vel)
-        x_vel = o['pelvis']['vel'][0]**2
+        x_vel = o['pelvis']['vel'][0]
         y_vel = o['pelvis']['vel'][1]**2
 #        print('vel**2: ', np.round(np.asarray(o['pelvis']['vel'])**2, 2))
-        rewards['x_vel'] = sigmoid(x_vel - 5)
+        rewards['x_vel'] = 0.5 * np.tanh(x_vel - 2)
         rewards['y_vel'] = 0.1 if y_vel < 0.1 else -sigmoid(y_vel)
 #        rewards['yaw_vel'] = - sigmoid(yaw_vel - 5)
 
@@ -208,47 +238,31 @@ class RewardAugEnv(gym.Wrapper):
 #        rewards['speed'] = speed#sigmoid(speed - 5)
 
         ground_rf = np.sum(np.asarray([o['l_leg']['ground_reaction_forces'], o['r_leg']['ground_reaction_forces']]))
-        rewards['ground_rf'] = 0 if ground_rf < 1 else -sigmoid(ground_rf)
+        rewards['ground_rf'] = 0 if ground_rf < 1.5 else -sigmoid(ground_rf)
 
 
         # if pelvis below 0.6, OsimEnv returns done; penalize this
         rewards['height'] = 0.1 if o['pelvis']['height'] > 0.6 else -3
 
-#        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
+        #print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
         r += sum(rewards.values())
         return o, r, d, i
 
-class MaxAndSkipEnv(gym.Wrapper):
+class SkipEnv(gym.Wrapper):
     def __init__(self, env=None, n_skips=4):
         """Return only every `skip`-th frame"""
         super().__init__(env)
-        # most recent raw observations (for max pooling across time steps)
-        self.obs_buffer = deque(maxlen=4)
-        self.n_skips       = n_skips
+        self.n_skips = n_skips
 
     def step(self, action):
         total_reward = 0
-        done = None
         for _ in range(self.n_skips):
             obs, reward, done, info = self.env.step(action)
-            self.obs_buffer.append(obs)
             total_reward += reward
             if done:
                 break
 
-        # TODO  -- max on all elements of the state space?; perhaps on the actuation strenght?
-        #       -- test with/without max
-        max_frame = obs#np.max(np.stack(self.obs_buffer), axis=0)
-
-        return max_frame, total_reward, done, info
-
-    def reset(self, **kwargs):
-        """Clear past frame buffer and init. to first obs. from inner env."""
-        self.obs_buffer.clear()
-        obs = self.env.reset(**kwargs)
-        self.obs_buffer.append(obs)
-        return obs
-
+        return obs, total_reward, done, info
 
 
 # --------------------

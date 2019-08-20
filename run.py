@@ -13,7 +13,7 @@ from mpi4py import MPI
 
 import gym
 from env_wrappers import DummyVecEnv, SubprocVecEnv, Monitor, L2M2019EnvBaseWrapper, RandomPoseInitEnv, \
-                            ZeroOneActionsEnv, MaxAndSkipEnv, RewardAugEnv, PoolVTgtEnv, FallPenaltyEnv, Obs2VecEnv
+                            ZeroOneActionsEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv
 from logger import save_json
 
 parser = argparse.ArgumentParser()
@@ -59,7 +59,7 @@ def get_alg_config(alg, env, extra_args=None):
 def get_env_config(env, extra_args=None):
     env_args = None
     if env == 'L2M2019':
-        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2, 'stepsize': 0.04}
+        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2, 'stepsize': 0.01}
     if extra_args is not None and env_args is not None:
         env_args.update({k: v for k, v in extra_args.items() if k in env_args})
     return env_args
@@ -87,12 +87,12 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
     if env_name == 'L2M2019':
         env = L2M2019EnvBaseWrapper(**env_args)
         env = RandomPoseInitEnv(env)
+        env = NoopResetEnv(env)
         env = ZeroOneActionsEnv(env)
-#        env = FallPenaltyEnv(env)
 #        env = PoolVTgtEnv(env)  # NOTE -- needs to be after RewardAug if RewardAug uses the full vtgt field
         env = RewardAugEnv(env)
+        env = SkipEnv(env)
         env = Obs2VecEnv(env)
-#        env = MaxAndSkipEnv(env)
     else:
         env = gym.envs.make(env_name)
         env.seed(seed + subrank if seed is not None else None)
