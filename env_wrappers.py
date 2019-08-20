@@ -19,10 +19,11 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
     """ Wrapper to move certain class variable to instance variables """
     def __init__(self, **kwargs):
         self._model = kwargs.pop('model', '3D')
-        self._stepsize = kwargs.pop('stepsize', 0.01)
+        stepsize = kwargs.pop('stepsize', 0.01)
         self._visualize = kwargs.get('visualize', False)
         self._osim_model = None
         super().__init__(**kwargs)  # NOTE -- L2M2019Env at init calls get_model_key() which pulls self.model; -> setting _model here initializes the model to 2D or 3D
+        self.osim_model.stepsize = stepsize
 
     @property
     def model(self):
@@ -64,12 +65,17 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
         return super().reset(obs_as_dict=obs_as_dict, **kwargs)
 
 class Obs2VecEnv(gym.Wrapper):
+    def __init__(self, env=None, **kwargs):
+        super().__init__(env)
+        obs_dim = env.observation_space.shape[0] - 2*11*11
+        self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
+
     def obs2vec(self, obs_dict):
         # Augmented environment from the L2R challenge
         res = []
 
         # target velocity field (in body frame)
-        res += obs_dict['v_tgt_field'].flatten().tolist()
+#        res += obs_dict['v_tgt_field'].flatten().tolist()
 
         res.append(obs_dict['pelvis']['height'])
         res.append(obs_dict['pelvis']['pitch'])
@@ -164,21 +170,40 @@ class RewardAugEnv(gym.Wrapper):
     def step(self, action):
         o, r, d, i = self.env.step(action)
 
-        # distance from vtgt min
-        def distance_from_min(grid):
-            x, y = np.nonzero(grid == np.min(grid))
-            x = x[0] - grid.shape[0]//2
-            y = y[0] - grid.shape[1]//2
-            return np.sqrt(x**2 + y**2)
+        rewards = {}
+        def sigmoid(x):
+            return 1 / (1 + np.exp(-x))
 
-        x, y = np.asarray(o['v_tgt_field'])
-        dist = np.mean([distance_from_min(x), distance_from_min(y)])
-        r += 10 * max(0, np.log(dist))
+        # gyroscope -- l2 penalize pitch and roll
+        eps = 0.01
+        pitch = o['pelvis']['pitch']**2
+        roll = o['pelvis']['roll']**2
+        yaw = abs(self.get_state_desc()['joint_pos']['ground_pelvis'][2])
+#        yaw_vel = o['pelvis']['vel'][5]**2
+        rewards['pitch'] = 0.1 if pitch < eps else -pitch
+        rewards['roll'] = 0.1 if roll < eps  else -roll
+        rewards['yaw'] = 0.1 if yaw < 0.3 else -sigmoid(yaw)
+#        rewards['yaw_vel'] = - sigmoid(yaw_vel - 5)
+
+#        # distance from vtgt min
+#        def distance_from_min(grid):
+#            x, y = np.nonzero(grid == np.min(grid))
+#            x = x[0] - grid.shape[0]//2
+#            y = y[0] - grid.shape[1]//2
+#            return np.sqrt(x**2 + y**2)
+#
+#        x, y = np.asarray(o['v_tgt_field'])
+#        dist = np.mean([distance_from_min(x), distance_from_min(y)])
+#        rewards['dist'] = 0.1 * dist
+
+        speed = np.sqrt(o['pelvis']['vel'][0]**2 + o['pelvis']['vel'][1]**2)
+        rewards['speed'] = sigmoid(speed - 5)
 
         # if pelvis below 0.6, OsimEnv returns done; penalize this
-        if o['pelvis']['height'] < 0.6:
-            r -= 10
+        rewards['height'] = 0.1 if o['pelvis']['height'] > 0.6 else -1
 
+#        print('Augmented rewards: {}'.format(rewards))
+        r += sum(rewards.values())
         return o, r, d, i
 
 class MaxAndSkipEnv(gym.Wrapper):
@@ -238,7 +263,8 @@ class Monitor(gym.core.Wrapper):
             header = {'t_start': time.strftime("%Y-%m-%d_%H-%M-%S"), 'model': env.model}
             header = '# {} \n'.format(header)
             self.f = open(filename, "at")
-            self.f.write(header)
+            if not osp.exists(filename):
+                self.f.write(header)
             self.logger = csv.DictWriter(self.f, fieldnames=('return', 'length', 'time'))
             self.logger.writeheader()
             self.f.flush()
@@ -450,7 +476,7 @@ def clear_mpi_env_vars():
     """
     removed_environment = {}
     for k, v in list(os.environ.items()):
-        for prefix in ['OMPI_', 'PMI_']:
+        for prefix in ['OMPI_', 'PMI_', 'PMIX_']:
             if k.startswith(prefix):
                 removed_environment[k] = v
                 del os.environ[k]

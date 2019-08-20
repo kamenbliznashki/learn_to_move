@@ -47,6 +47,8 @@ class Memory:
         return Transition(*np.atleast_2d(self.obs[idxs], self.actions[idxs], self.rewards[idxs], self.dones[idxs], self.next_obs[idxs]))
 
     def initialize(self, env, n_prefill_steps=1000, training=True):
+        if not training:
+            return
         # prefill memory using uniform exploration
         if self.current_obs is None:
             self.current_obs = env.reset()

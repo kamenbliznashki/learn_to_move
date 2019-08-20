@@ -31,9 +31,9 @@ class DDPG:
         self.next_obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='next_obs')
 
         # obs indices to pass to policy and q function
-        # policy gets v_tgt_field, pelvis hight pitch roll, joints, fiber lengths
-#        policy_idxs = [*list(range(3)), *list(range(12,16)), *list(range(20,20+3*11))[1::3], *list(range(20+3*11+3,20+3*11+3+4)), \
-#                        *list(range(20+3*11+3+4+4, 20+2*3*11+3+4+4))[1::3]]
+        # policy gets pelvis hight pitch roll, joints, fiber lengths -- no velocity
+        idxs = [*list(range(3)), *list(range(12,16)), *list(range(20,20+3*11))[1::3], *list(range(20+3*11+3,20+3*11+3+4)), \
+                        *list(range(20+3*11+3+4+4, 20+2*3*11+3+4+4))[1::3]]
 #        policy_idxs = np.asarray(policy_idxs) + 2*3*3
 #        policy_idxs = policy_idxs.tolist()
 
@@ -45,25 +45,25 @@ class DDPG:
                             output_activation=tf.tanh)
         policy_target = Model('policy_target', hidden_sizes=policy_hidden_sizes, activation=tf.tanh,
                                 output_size=action_shape[0], output_activation=tf.tanh)
-        embed_v_tgt = Model('vtgt_embed', hidden_sizes=[256, 256], output_size=64, activation=tf.tanh, output_activation=tf.tanh)
-
-        # split obs from v_tgt_field and embed vtgt
-        vtgt = self.obs_ph[:,:2*11*11]
-        next_vtgt = self.next_obs_ph[:,:2*11*11]
-        embedded_vtgt = embed_v_tgt(vtgt)
-        embedded_next_vtgt = embed_v_tgt(next_vtgt)
-        obs = tf.concat([embedded_vtgt, self.obs_ph[:,2*11*11:]], axis=1)
-        next_obs = tf.concat([embedded_next_vtgt, self.next_obs_ph[:,2*11*11:]], axis=1)
+#        embed_v_tgt = Model('vtgt_embed', hidden_sizes=[256, 256], output_size=64, activation=tf.tanh, output_activation=tf.tanh)
+#
+#        # split obs from v_tgt_field and embed vtgt
+#        vtgt = self.obs_ph[:,:2*11*11]
+#        next_vtgt = self.next_obs_ph[:,:2*11*11]
+#        embedded_vtgt = embed_v_tgt(vtgt)
+#        embedded_next_vtgt = embed_v_tgt(next_vtgt)
+#        obs = tf.concat([embedded_vtgt, self.obs_ph[:,2*11*11:]], axis=1)
+#        next_obs = tf.concat([embedded_next_vtgt, self.next_obs_ph[:,2*11*11:]], axis=1)
 
         # current q values
         q_value = q(tf.concat([obs, self.actions_ph], 1))
         # q values at policy action
-        self.actions = max_action * policy(obs)
+        self.actions = max_action * policy(tf.gather(obs, idxs, axis=1))
 #        self.actions = max_action * policy(tf.gather(self.obs_ph, policy_idxs, axis=1))
         q_value_at_policy_action = q(tf.concat([obs, self.actions], 1))
 
         # select next action according to the policy_target
-        next_actions = policy_target(next_obs)
+        next_actions = policy_target(tf.gather(next_obs, idxs, axis=1))
 #        next_actions = policy_target(tf.gather(self.next_obs_ph, policy_idxs, axis=1))
         # compute q targets
         q_target_value = q_target(tf.concat([next_obs, next_actions], 1))
@@ -78,9 +78,8 @@ class DDPG:
         self.q_optimizer = MpiAdam(var_list=q.vars, scale_grad_by_procs=False)
         self.policy_grads = flatgrad(self.policy_loss, policy.trainable_vars)
         self.policy_optimizer = MpiAdam(var_list=policy.vars, scale_grad_by_procs=False)
-        self.global_step = tf.train.get_or_create_global_step()
         world_size = MPI.COMM_WORLD.Get_size()
-        self.update_global_step = tf.assign_add(self.global_step, world_size)
+        self.update_global_step = tf.assign_add(tf.train.get_or_create_global_step(), world_size)
         #   target update ops
         self.target_update_ops = tf.group(self.create_target_update_op(q, q_target) +
                                           self.create_target_update_op(policy, policy_target))
@@ -114,7 +113,7 @@ class DDPG:
         self.sess.run(self.target_update_ops)
 
     def train(self, batch):
-        policy_grads, policy_loss, q_grads, q_loss, _ = self.sess.run(
+        policy_grads, _, q_grads, _, _ = self.sess.run(
                 [self.policy_grads, self.policy_loss, self.q_grads, self.q_loss, self.update_global_step],
                 feed_dict={self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
                            self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
@@ -195,11 +194,10 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         if t % args.log_interval == 0:
             ep_rewards_mean, ep_rewards_std, _ = mpi_moments(episode_rewards_history)
             ep_lengths_mean, ep_lengths_std, _ = mpi_moments(episode_lengths_history)
-            _, _, n_episodes_count = mpi_moments([n_episodes])
+            n_episodes_mean, _, n_episodes_count = mpi_moments([n_episodes])
             toc = time.time()
-            stats['timestep'] = t
-            stats['policy step'] = args.world_size * t
-            stats['episodes'] = n_episodes_count
+            stats['timestep'] = args.world_size * t
+            stats['episodes'] = n_episodes_mean * n_episodes_count
             stats['steps_per_second'] = args.world_size * args.log_interval / (toc - tic)
             stats['fps'] = args.world_size * env.num_envs * batch_size / (toc - tic)
             stats['avg_return'] = ep_rewards_mean
@@ -228,7 +226,7 @@ def defaults(env_name=None):
     if env_name == 'L2M2019':
         return {'policy_hidden_sizes': (256, 256),
                 'q_hidden_sizes': (256, 256),
-                'expl_noise': 0.1,
+                'expl_noise': 0.,
                 'discount': 0.96,
                 'tau': 0.005,
                 'q_lr': 1e-3,

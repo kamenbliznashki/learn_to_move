@@ -5,14 +5,20 @@ import numpy as np
 import tensorflow as tf
 from tabulate import tabulate
 
+from mpi4py import MPI
+
 from algs.memory import Memory
 from algs.models import GaussianPolicy, Model
+from mpi_adam import MpiAdam, flatgrad
+from mpi_utils import mpi_moments
 import logger
 
 
 class SAC:
     def __init__(self, observation_shape, action_shape, *,
                     policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes, alpha, discount, tau, lr):
+        self.lr = lr
+
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, *action_shape], name='actions')
@@ -22,11 +28,21 @@ class SAC:
 
         # build graph
         # 1. networks
+#        embed_v_tgt = Model('vtgt_embed', hidden_sizes=[128, 128], output_size=8, output_activation=tf.tanh)
         value_function = Model('value_function', hidden_sizes=value_hidden_sizes, output_size=1)
         target_value_function = Model('target_value_function', hidden_sizes=value_hidden_sizes, output_size=1)
         q_function  = Model('q_function', hidden_sizes=q_hidden_sizes, output_size=1)
         q_function2 = Model('q_function2', hidden_sizes=q_hidden_sizes, output_size=1)
         policy = GaussianPolicy('policy', hidden_sizes=policy_hidden_sizes, output_size=2*action_shape[0])
+
+#        # split obs from v_tgt_field and embed vtgt
+#        vtgt_size = 2*11*11
+#        vtgt = self.obs_ph[:,:vtgt_size]
+#        next_vtgt = self.next_obs_ph[:,:vtgt_size]
+#        embedded_vtgt = embed_v_tgt(vtgt)
+#        embedded_next_vtgt = embed_v_tgt(next_vtgt)
+#        obs = tf.concat([embedded_vtgt, self.obs_ph[:,vtgt_size:]], axis=1)
+#        next_obs = tf.concat([embedded_next_vtgt, self.next_obs_ph[:,vtgt_size:]], axis=1)
 
         # 2. loss
         #   value function loss term
@@ -48,19 +64,28 @@ class SAC:
         policy_loss = tf.reduce_mean(alpha * log_pis - q_value_at_policy_action)
 
         # 3. update ops
-        optimizer = tf.train.AdamOptimizer(lr, name='optimizer')
-        value_train_op = optimizer.minimize(value_function_loss, var_list=value_function.trainable_vars)
-        q_value_train_op = optimizer.minimize(q_value_loss, var_list=q_function.trainable_vars)
-        q_value2_train_op = optimizer.minimize(q_value2_loss, var_list=q_function2.trainable_vars)
-        policy_train_op = optimizer.minimize(policy_loss, var_list=policy.trainable_vars, global_step=tf.train.get_or_create_global_step())
+        v_grads = flatgrad(value_function_loss, value_function.trainable_vars)
+        self.v_optimizer = MpiAdam(var_list=value_function.vars, scale_grad_by_procs=False)
+        q_grads = flatgrad(q_value_loss, q_function.trainable_vars)
+        self.q_optimizer = MpiAdam(var_list=q_function.vars, scale_grad_by_procs=False)
+        q2_grads = flatgrad(q_value2_loss, q_function2.trainable_vars)
+        self.q2_optimizer = MpiAdam(var_list=q_function2.vars, scale_grad_by_procs=False)
+        policy_grads = flatgrad(policy_loss, policy.trainable_vars)
+        self.policy_optimizer = MpiAdam(var_list=policy.vars, scale_grad_by_procs=False)
+        update_global_step = tf.assign_add(tf.train.get_or_create_global_step(), MPI.COMM_WORLD.Get_size())
         #   combined train ops
-        self.train_ops = [value_train_op, q_value_train_op, policy_train_op, q_value2_train_op]
+        self.train_ops = [v_grads, value_function_loss, q_grads, q_value_loss, q2_grads, q_value2_loss, policy_grads,
+                            policy_loss, update_global_step]
         self.target_update_ops = [tf.assign(target, (1 - tau) * target + tau * source) for target, source in \
                                     zip(target_value_function.trainable_vars, value_function.trainable_vars)]
 
     def initialize(self, sess):
         self.sess = sess
         self.sess.run(tf.global_variables_initializer())
+        self.v_optimizer.sync()
+        self.q_optimizer.sync()
+        self.q2_optimizer.sync()
+        self.policy_optimizer.sync()
 
     def get_actions(self, obs):
         actions = self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
@@ -70,8 +95,14 @@ class SAC:
         self.sess.run(self.target_update_ops)
 
     def train_step(self, batch):
-        self.sess.run(self.train_ops, {self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
+        v_grads, value_function_loss, q_grads, q_value_loss, q2_grads, q_value2_loss, policy_grads, policy_loss, _ = self.sess.run(
+                self.train_ops, {self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
                                        self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
+        self.v_optimizer.update(v_grads, stepsize=self.lr)
+        self.q_optimizer.update(q_grads, stepsize=self.lr)
+        self.q2_optimizer.update(q2_grads, stepsize=self.lr)
+        self.policy_optimizer.update(policy_grads, stepsize=self.lr)
+        return value_function_loss, q_value_loss, q_value2_loss, policy_loss
 
 def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
 
@@ -79,7 +110,6 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     tf.set_random_seed(seed)
 
     max_memory_size = alg_args.pop('max_memory_size', int(1e6))
-    n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
     reward_scale = alg_args.pop('reward_scale', 1.)
     batch_size = alg_args.pop('batch_size', 256)
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape, reward_scale)
@@ -90,7 +120,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     agent.initialize(sess)
     saver = tf.train.Saver()
     sess.graph.finalize()
-    memory.initialize(env, n_prefill_steps, training=not args.load_path)
+    memory.initialize(env, training=not args.load_path)
     obs = env.reset()
 
     # setup tracking
@@ -112,11 +142,8 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
 
         # sample action -> step env -> store transition
         actions = agent.get_actions(obs)
-        toc_a = time.time()
         next_obs, r, done, _ = env.step(actions)
-        toc_e = time.time()
         memory.store_transition(obs, actions, r, done, next_obs)
-        toc_m = time.time()
         obs = next_obs
 
         # keep records
@@ -135,31 +162,34 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
 
         # train
         batch = memory.sample(batch_size)
-        agent.train_step(batch)
+        value_function_loss, q_value_loss, q_value2_loss, policy_loss = agent.train_step(batch)
         agent.update_target_net()
-        toc_t = time.time()
 
         # save
-        if t % args.save_interval == 0:
+        if t % args.save_interval == 0 and args.rank == 0:
             saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
 
         # log stats
         if t % args.log_interval == 0:
             toc = time.time()
-            stats['timestep'] = t
-            stats['episodes'] = n_episodes
-            stats['steps_per_second'] = args.log_interval / (toc - tic)
-            stats['fps'] = env.num_envs * batch_size / (toc - tic)
-            stats['time_get_action'] = toc_a - tic
-            stats['time_env_step'] = toc_e - toc_a
-            stats['time_memory'] = toc_m - toc_e
-            stats['time_train'] = toc_t - toc_m
-            stats['avg_return'] = np.mean(episode_rewards_history)
-            stats['std_return'] = np.std(episode_rewards_history)
-            stats['avg_episode_length'] = np.mean(episode_lengths_history)
-            stats['std_episode_length'] = np.std(episode_lengths_history)
-            logger.save_csv(stats, args.output_dir + '/log.csv')
-            print(tabulate(stats.items(), tablefmt='rst'))
+            ep_rewards_mean, ep_rewards_std, _ = mpi_moments(episode_rewards_history)
+            ep_lengths_mean, ep_lengths_std, _ = mpi_moments(episode_lengths_history)
+            n_episodes_mean, _, n_episodes_count = mpi_moments([n_episodes])
+            stats['timestep'] = args.world_size * t
+            stats['episodes'] = n_episodes_mean * n_episodes_count
+            stats['steps_per_second'] = args.world_size * args.log_interval / (toc - tic)
+            stats['fps'] = args.world_size * env.num_envs * batch_size / (toc - tic)
+            stats['avg_return'] = ep_rewards_mean
+            stats['std_return'] = ep_rewards_std
+            stats['avg_episode_length'] = ep_lengths_mean
+            stats['std_episode_length'] = ep_lengths_std
+            stats['value_function_loss'] = value_function_loss
+            stats['q_value_loss'] = q_value_loss
+            stats['q_value2_loss'] = q_value2_loss
+            stats['policy_loss'] = policy_loss
+            if args.rank == 0:
+                logger.save_csv(stats, args.output_dir + '/log.csv')
+                print(tabulate(stats.items(), tablefmt='rst'))
 
     return agent
 
@@ -179,8 +209,7 @@ def defaults(env_name=None):
                 'lr': 1e-3,
                 'batch_size': 256,
                 'max_memory_size': int(1e6),
-                'n_prefill_steps': 1000,
-                'reward_scale': 20}
+                'reward_scale': 1}
     else:  # mujoco
         alpha = {
             'Ant-v2': 0.1,
@@ -208,3 +237,4 @@ def defaults(env_name=None):
                 'batch_size': 256,
                 'max_memory_size': int(1e6),
                 'reward_scale': reward_scale}
+
