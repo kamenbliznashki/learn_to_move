@@ -115,8 +115,8 @@ class Obs2VecEnv(gym.Wrapper):
 class RandomPoseInitEnv(gym.Wrapper):
     def reset(self, **kwargs):
         y_vel = np.random.uniform(-1,1)
-        leg1 = [np.random.uniform(np.pi/4, 1.25*np.pi/3), -1.5, -1.5, np.random.uniform(-0.935,0.935)]
-        leg2 = [0, np.random.uniform(-0.5, 0.5), np.random.uniform(-0.25, 0.015), np.random.uniform(-0.935,0.935)]
+        leg1 = [np.random.uniform(np.pi/4, 1.25*np.pi/3), -1.5, -1.5, np.random.uniform(-0.7,0.7)]
+        leg2 = [0, np.random.uniform(-0.5, 0.5), np.random.uniform(-0.25, -0.015), np.random.uniform(-0.935,0.935)]
 
         pose = [np.random.uniform(0.5, 2),
                 y_vel,
@@ -152,7 +152,8 @@ class NoopResetEnv(gym.Wrapper):
 
     def reset(self, **kwargs):
         self.env.reset()
-        noops = np.random.randint(1, self.noop_max + 1)
+        # NOTE -- sample noops
+        noops = self.noop_max#np.random.randint(1, self.noop_max + 1)
         for _ in range(noops):
             o, _, _, _ = self.env.step(self.noop_action)
         return o
@@ -201,50 +202,71 @@ class RewardAugEnv(gym.Wrapper):
     def step(self, action):
         o, r, d, i = self.env.step(action)
 
+        # NOTE -- should be left right symmetric if using symmetric memory
+
         rewards = {}
         def sigmoid(x):
             return 1 / (1 + np.exp(-x))
 
-        # gyroscope -- l2 penalize pitch and roll
-        eps = 0.01
-        pitch = o['pelvis']['pitch']**2
-        roll = o['pelvis']['roll']**2
-        yaw = abs(self.get_state_desc()['joint_pos']['ground_pelvis'][2])
-#        yaw_vel = o['pelvis']['vel'][5]**2
-        rewards['pitch'] = 0.1 if pitch < eps else -pitch
-        rewards['roll'] = 0.1 if roll < eps  else -roll
-        rewards['yaw'] = 0.1 if yaw < 0.3 else -sigmoid(yaw)
-        ang_vel = np.sum(np.asarray(o['pelvis']['vel'][3:])**2)
-        rewards['ang_vel'] = 0.1 if ang_vel < 2 else -sigmoid(ang_vel)
-        x_vel = o['pelvis']['vel'][0]
-        y_vel = o['pelvis']['vel'][1]**2
-#        print('vel**2: ', np.round(np.asarray(o['pelvis']['vel'])**2, 2))
-        rewards['x_vel'] = 0.5 * np.tanh(x_vel - 2)
-        rewards['y_vel'] = 0.1 if y_vel < 0.1 else -sigmoid(y_vel)
-#        rewards['yaw_vel'] = - sigmoid(yaw_vel - 5)
+        # gyroscope -- penalize pitch and roll
+        eps = 0.15
 
-#        # distance from vtgt min
-#        def distance_from_min(grid):
-#            x, y = np.nonzero(grid == np.min(grid))
-#            x = x[0] - grid.shape[0]//2
-#            y = y[0] - grid.shape[1]//2
-#            return np.sqrt(x**2 + y**2)
+        height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
+        yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
+        lf, ll, lu = o['l_leg']['ground_reaction_forces']
+        rf, rl, ru = o['r_leg']['ground_reaction_forces']
+
+        rewards['pitch'] = - np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting, then clamped to 0, otherwise positive penalty
+        rewards['roll']  = - np.clip(roll * droll, a_min=0, a_max=None)
+        rewards['yaw']   = - np.clip(yaw * dyaw, a_min=0, a_max=None)
+
+        rewards['dx'] = np.tanh(dx)
+        rewards['dy'] = 0.1 if dy**2 < 0.1 else -sigmoid(dy)
+        rewards['dz'] = 0.1 if dz > -0.4 else dz
+
+        rewards['height'] = 0 if height > 0.7 else -5
+
+        rewards['grf_forward'] = - lf*rf
+        rewards['grf_lateral'] = 10*ll*rl
+        rewards['grf_upward']  = - np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
+
+
+#        pitch = abs(o['pelvis']['pitch']
+#        roll = abs(o['pelvis']['roll'])
+#        yaw = abs(self.get_state_desc()['joint_pos']['ground_pelvis'][2])
+#        rewards['pitch'] = 0.1 if pitch < eps else -pitch
+#        rewards['roll'] = 0.1 if roll < eps  else -roll
+#        rewards['yaw'] = 0.1 if yaw < 0.3 else -sigmoid(yaw)
+#        ang_vel = np.sqrt(np.sum(np.asarray(o['pelvis']['vel'][3:])**2))
+#        rewards['ang_vel'] = 0.1 if ang_vel < 3 else -sigmoid(ang_vel - 3)
+#        x_vel = o['pelvis']['vel'][0]
+#        y_vel = o['pelvis']['vel'][1]**2
+#        print('vel abs: ', np.round(np.abs(np.asarray(o['pelvis']['vel'])), 2))
+#        dx, dy, dz = o['pelvis']['vel'][:3]
+#        print('theta: {:.2f}'.format(np.pi/180*np.arctan(np.sqrt(dx**2 + dy**2)/dz)))
+#        rewards['x_vel'] = sigmoid(x_vel - 2)
+#        rewards['y_vel'] = 0.1 if y_vel < 0.1 else -sigmoid(y_vel)
 #
-#        x, y = np.asarray(o['v_tgt_field'])
-#        dist = np.mean([distance_from_min(x), distance_from_min(y)])
-#        rewards['dist'] = 0.1 * dist
+##        # distance from vtgt min
+##        def distance_from_min(grid):
+##            x, y = np.nonzero(grid == np.min(grid))
+##            x = x[0] - grid.shape[0]//2
+##            y = y[0] - grid.shape[1]//2
+##            return np.sqrt(x**2 + y**2)
+##
+##        x, y = np.asarray(o['v_tgt_field'])
+##        dist = np.mean([distance_from_min(x), distance_from_min(y)])
+##        rewards['dist'] = 0.1 * dist
+#
+##        speed = np.sqrt(o['pelvis']['vel'][0]**2 + o['pelvis']['vel'][1]**2)
+##        rewards['speed'] = speed#sigmoid(speed - 5)
+#
+#        ground_rf = np.sum(np.asarray([o['l_leg']['ground_reaction_forces'], o['r_leg']['ground_reaction_forces']]))
+#        rewards['ground_rf'] = 0 if ground_rf < 1.5 else -sigmoid(ground_rf)
 
-#        speed = np.sqrt(o['pelvis']['vel'][0]**2 + o['pelvis']['vel'][1]**2)
-#        rewards['speed'] = speed#sigmoid(speed - 5)
-
-        ground_rf = np.sum(np.asarray([o['l_leg']['ground_reaction_forces'], o['r_leg']['ground_reaction_forces']]))
-        rewards['ground_rf'] = 0 if ground_rf < 1.5 else -sigmoid(ground_rf)
-
-
-        # if pelvis below 0.6, OsimEnv returns done; penalize this
-        rewards['height'] = 0.1 if o['pelvis']['height'] > 0.6 else -3
-
-        #print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
+#        print('pelvis: ', o['pelvis'])
+#        print('ground_rf:\n', o['l_leg']['ground_reaction_forces'], '\n', o['r_leg']['ground_reaction_forces'])
+#        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
         r += sum(rewards.values())
         return o, r, d, i
 

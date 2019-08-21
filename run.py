@@ -87,7 +87,7 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
     if env_name == 'L2M2019':
         env = L2M2019EnvBaseWrapper(**env_args)
         env = RandomPoseInitEnv(env)
-        env = NoopResetEnv(env)
+#        env = NoopResetEnv(env)
         env = ZeroOneActionsEnv(env)
 #        env = PoolVTgtEnv(env)  # NOTE -- needs to be after RewardAug if RewardAug uses the full vtgt field
         env = RewardAugEnv(env)
@@ -154,6 +154,7 @@ def main(args, extra_args):
         episode_rewards = 0
         episode_steps = 0
         while True:
+            i = input('press key to continue ...')
             action = agent.get_actions(obs)
             next_obs, rew, done, _ = env.step(action.flatten())
             episode_rewards += rew
@@ -162,7 +163,6 @@ def main(args, extra_args):
                 agent.get_action_value(np.atleast_2d(obs), action).squeeze(), rew, episode_rewards))
             obs = next_obs
             env.render()
-#            i = input('press key to continue ...')
             time.sleep(0.5)
             if done:
                 print('Episode length {}; cumulative reward: {:.2f}'.format(episode_steps, episode_rewards))
