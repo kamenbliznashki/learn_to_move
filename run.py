@@ -154,21 +154,22 @@ def main(args, extra_args):
         episode_rewards = 0
         episode_steps = 0
         while True:
-            i = input('press key to continue ...')
+#            i = input('press key to continue ...')
             action = agent.get_actions(obs)
             next_obs, rew, done, _ = env.step(action.flatten())
             episode_rewards += rew
             episode_steps += 1
-            print('q value: {:.4f}; reward: {:.2f}; reward so far: {:.2f}'.format(
-                agent.get_action_value(np.atleast_2d(obs), action).squeeze(), rew, episode_rewards))
+#            print('q value: {:.4f}; reward: {:.2f}; reward so far: {:.2f}'.format(
+#                agent.get_action_value(np.atleast_2d(obs), action).squeeze(), rew, episode_rewards))
             obs = next_obs
             env.render()
-            time.sleep(0.5)
+#            time.sleep(0.5)
             if done:
                 print('Episode length {}; cumulative reward: {:.2f}'.format(episode_steps, episode_rewards))
                 episode_rewards = 0
                 episode_steps = 0
-                obs = env.reset()
+                i = input('enter random seed: ')
+                obs = env.reset(seed=int(i))
 
     env.close()
     return agent

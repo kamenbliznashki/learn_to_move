@@ -32,8 +32,8 @@ class DDPG:
 
         # obs indices to pass to policy and q function
         # policy gets pelvis hight pitch roll, joints, fiber lengths -- no velocity
-        idxs = [*list(range(3)), *list(range(12,16)), *list(range(20,20+3*11))[1::3], *list(range(20+3*11+3,20+3*11+3+4)), \
-                        *list(range(20+3*11+3+4+4, 20+2*3*11+3+4+4))[1::3]]
+#        idxs = [*list(range(3)), *list(range(12,16)), *list(range(20,20+3*11))[1::3], *list(range(20+3*11+3,20+3*11+3+4)), \
+#                        *list(range(20+3*11+3+4+4, 20+2*3*11+3+4+4))[1::3]]
 #        policy_idxs = np.asarray(policy_idxs) + 2*3*3
 #        policy_idxs = policy_idxs.tolist()
 
@@ -56,17 +56,17 @@ class DDPG:
 #        next_obs = tf.concat([embedded_next_vtgt, self.next_obs_ph[:,2*11*11:]], axis=1)
 
         # current q values
-        q_value = q(tf.concat([obs, self.actions_ph], 1))
+        q_value = q(tf.concat([self.obs_ph, self.actions_ph], 1))
         # q values at policy action
-        self.actions = max_action * policy(tf.gather(obs, idxs, axis=1))
+        self.actions = max_action * policy(self.obs_ph)
 #        self.actions = max_action * policy(tf.gather(self.obs_ph, policy_idxs, axis=1))
-        q_value_at_policy_action = q(tf.concat([obs, self.actions], 1))
+        q_value_at_policy_action = q(tf.concat([self.obs_ph, self.actions], 1))
 
         # select next action according to the policy_target
-        next_actions = policy_target(tf.gather(next_obs, idxs, axis=1))
+        next_actions = policy_target(self.next_obs_ph)
 #        next_actions = policy_target(tf.gather(self.next_obs_ph, policy_idxs, axis=1))
         # compute q targets
-        q_target_value = q_target(tf.concat([next_obs, next_actions], 1))
+        q_target_value = q_target(tf.concat([self.next_obs_ph, next_actions], 1))
         q_target_value = self.rewards_ph + tf.stop_gradient(discount * q_target_value * (1 - self.dones_ph))
 
         # 2. loss on critics and actor

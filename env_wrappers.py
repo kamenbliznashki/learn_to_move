@@ -114,6 +114,11 @@ class Obs2VecEnv(gym.Wrapper):
 
 class RandomPoseInitEnv(gym.Wrapper):
     def reset(self, **kwargs):
+        seed = kwargs.get('seed', None)
+        if seed is not None:
+            state = np.random.get_state()
+            np.random.seed(seed)
+
         y_vel = np.random.uniform(-1,1)
         leg1 = [np.random.uniform(np.pi/4, 1.25*np.pi/3), -1.5, -1.5, np.random.uniform(-0.7,0.7)]
         leg2 = [0, np.random.uniform(-0.5, 0.5), np.random.uniform(-0.25, -0.015), np.random.uniform(-0.935,0.935)]
@@ -129,6 +134,9 @@ class RandomPoseInitEnv(gym.Wrapper):
             pose += leg2 + leg1
 
         pose = np.asarray(pose)
+
+        if seed is not None:
+            np.random.set_state(state)
 
 #        pose = np.array([np.random.uniform(0,1),          # forward speed
 #                         0,#np.random.uniform(-1,1),          # righward speed
@@ -230,6 +238,9 @@ class RewardAugEnv(gym.Wrapper):
         rewards['grf_lateral'] = 10*ll*rl
         rewards['grf_upward']  = - np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
 
+
+        if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
+            r -= 100  # remove survival bonus
 
 #        pitch = abs(o['pelvis']['pitch']
 #        roll = abs(o['pelvis']['roll'])

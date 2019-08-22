@@ -10,16 +10,17 @@ parser.add_argument('logdirs', nargs='*')
 parser.add_argument('--recurse', '-r', action='store_true')
 
 
-def plot_from_dirs(logdirs):
+def plot_from_dirs(logdirs, metric='avg_episode_length', metric_std='std_episode_length'):
     # collect data csv's
     data = []
     for logdir in logdirs:
         df = pd.read_csv(os.path.join(logdir, 'log.csv'))
-        df = df[['timestep', 'avg_return', 'std_return']]
+        df = df[['timestep', metric, metric_std]]
 
-        x, y, std = df['timestep'], df['avg_return'], np.maximum(df['std_return'], 1)
+        x, y, std = df['timestep'], df[metric], np.maximum(df[metric_std], 1)
 
-        ax = sns.lineplot(data=df, x='timestep', y='avg_return', err_style='band', label=logdir[:50]+' ...')
+        label = logdir.strip('/').rpartition('/')[2]
+        ax = sns.lineplot(data=df, x='timestep', y=metric, err_style='band', label=label)
         ax.fill_between(x, y - std, y + std, alpha=0.2)
 
     plt.legend(fontsize=8)
