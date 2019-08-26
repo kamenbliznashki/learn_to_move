@@ -16,7 +16,7 @@ import logger
 
 class DDPG:
     def __init__(self, observation_shape, action_shape, min_action, max_action, *,
-                    policy_hidden_sizes, q_hidden_sizes, discount, tau, q_lr, policy_lr):
+                    policy_hidden_sizes, q_hidden_sizes, discount, tau, q_lr, policy_lr, n_step_returns):
         self.min_action = min_action
         self.max_action = max_action
         self.tau = tau
@@ -26,9 +26,10 @@ class DDPG:
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, *action_shape], name='actions')
-        self.rewards_ph = tf.placeholder(tf.float32, [None, 1], name='rewards')
+        self.rewards_ph = tf.placeholder(tf.float32, [None, n_step_returns], name='rewards')
         self.dones_ph = tf.placeholder(tf.float32, [None, 1], name='dones')
         self.next_obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='next_obs')
+        self.nth_obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='nth_obs')
 
         # obs indices to pass to policy and q function
         # policy gets pelvis hight pitch roll, joints, fiber lengths -- no velocity
@@ -45,15 +46,6 @@ class DDPG:
                             output_activation=tf.tanh)
         policy_target = Model('policy_target', hidden_sizes=policy_hidden_sizes, activation=tf.tanh,
                                 output_size=action_shape[0], output_activation=tf.tanh)
-#        embed_v_tgt = Model('vtgt_embed', hidden_sizes=[256, 256], output_size=64, activation=tf.tanh, output_activation=tf.tanh)
-#
-#        # split obs from v_tgt_field and embed vtgt
-#        vtgt = self.obs_ph[:,:2*11*11]
-#        next_vtgt = self.next_obs_ph[:,:2*11*11]
-#        embedded_vtgt = embed_v_tgt(vtgt)
-#        embedded_next_vtgt = embed_v_tgt(next_vtgt)
-#        obs = tf.concat([embedded_vtgt, self.obs_ph[:,2*11*11:]], axis=1)
-#        next_obs = tf.concat([embedded_next_vtgt, self.next_obs_ph[:,2*11*11:]], axis=1)
 
         # current q values
         q_value = q(tf.concat([self.obs_ph, self.actions_ph], 1))
@@ -63,11 +55,12 @@ class DDPG:
         q_value_at_policy_action = q(tf.concat([self.obs_ph, self.actions], 1))
 
         # select next action according to the policy_target
-        next_actions = policy_target(self.next_obs_ph)
+        nth_actions = policy_target(self.nth_obs_ph)
 #        next_actions = policy_target(tf.gather(self.next_obs_ph, policy_idxs, axis=1))
         # compute q targets
-        q_target_value = q_target(tf.concat([self.next_obs_ph, next_actions], 1))
-        q_target_value = self.rewards_ph + tf.stop_gradient(discount * q_target_value * (1 - self.dones_ph))
+        q_target_value = q_target(tf.concat([self.nth_obs_ph, nth_actions], 1))
+        q_target_value = tf.reduce_sum(self.rewards_ph * discount**np.arange(n_step_returns)) + \
+                            tf.stop_gradient(discount**n_step_returns * q_target_value * (1 - self.dones_ph))
 
         # 2. loss on critics and actor
         self.q_loss = tf.losses.mean_squared_error(q_value, q_target_value)
@@ -116,7 +109,7 @@ class DDPG:
         policy_grads, _, q_grads, _, _ = self.sess.run(
                 [self.policy_grads, self.policy_loss, self.q_grads, self.q_loss, self.update_global_step],
                 feed_dict={self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
-                           self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
+                    self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs, self.nth_obs_ph: batch.nth_obs})
         self.policy_optimizer.update(policy_grads, stepsize=self.policy_lr)
         self.q_optimizer.update(q_grads, stepsize=self.q_lr)
 
@@ -128,11 +121,12 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     max_memory_size = alg_args.pop('max_memory_size', int(1e6))
     n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
     reward_scale = alg_args.pop('reward_scale', 1.)
+    n_step_returns = alg_args.get('n_step_returns', 1)
 
     np.random.seed(int(seed + 1e6*args.rank))
     tf.set_random_seed(int(seed + 1e6*args.rank))
 
-    memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape, reward_scale)
+    memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape, reward_scale, n_step_returns)
     agent = DDPG(env.observation_space.shape, env.action_space.shape, env.action_space.low[0], env.action_space.high[0], **alg_args)
 
     # initialize session, agent and memory
@@ -140,7 +134,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     agent.initialize(sess)
     saver = tf.train.Saver()
     sess.graph.finalize()
-    memory.initialize(env, n_prefill_steps, training=not args.load_path)
+    memory.initialize(env, n_prefill_steps, training=not args.play)
     obs = env.reset()
 
     # setup tracking
@@ -234,7 +228,8 @@ def defaults(env_name=None):
                 'batch_size': 128,
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': 1000,
-                'reward_scale': 1}
+                'reward_scale': 1,
+                'n_step_returns': 4}
     else:  # mujoco
         n_prefill_steps = {
             'Ant-v2': 10000,
@@ -254,5 +249,6 @@ def defaults(env_name=None):
                 'batch_size': 64,
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': n_prefill_steps,
-                'reward_scale': 1}
+                'reward_scale': 1,
+                'n_step_returns': 4}
 

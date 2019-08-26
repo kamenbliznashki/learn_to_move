@@ -1,26 +1,33 @@
-from collections import namedtuple
+from collections import namedtuple, deque
 import numpy as np
 
 
-Transition = namedtuple('Transition', ['obs', 'actions', 'rewards', 'dones', 'next_obs'])
+Transition = namedtuple('Transition', ['obs', 'actions', 'rewards', 'dones', 'next_obs', 'nth_obs'])
 
 class Memory:
-    def __init__(self, max_size, observation_shape, action_shape, reward_scale, dtype='float32'):
+    def __init__(self, max_size, observation_shape, action_shape, reward_scale, n_step_returns, dtype='float32'):
         self.observation_shape = observation_shape
         self.action_shape = action_shape
         self.reward_scale = reward_scale
+        self.n_step_returns = n_step_returns
         self.dtype = dtype
 
         self.obs      = np.zeros((max_size, *self.observation_shape)).astype(dtype)
         self.actions  = np.zeros((max_size, *self.action_shape)).astype(dtype)
-        self.rewards  = np.zeros((max_size, 1)).astype(dtype)
+        self.rewards  = np.zeros((max_size, n_step_returns)).astype(dtype)
         self.dones    = np.zeros((max_size, 1)).astype(dtype)
         self.next_obs = np.zeros((max_size, *self.observation_shape)).astype(dtype)
+        self.nth_obs  = np.zeros((max_size, *self.observation_shape)).astype(dtype)
 
         self.max_size = max_size
         self.pointer = 0
         self.size = 0
         self.current_obs = None
+
+        self.obs_buffer      = deque(maxlen=n_step_returns)
+        self.actions_buffer  = deque(maxlen=n_step_returns)
+        self.rewards_buffer  = deque(maxlen=n_step_returns)
+        self.dones_buffer    = deque(maxlen=n_step_returns)
 
     def store_transition(self, obs, actions, rewards, dones, next_obs, training=True):
         """ add transition to memory; overwrite oldest if memory is full """
@@ -30,21 +37,43 @@ class Memory:
         # assert 2d arrays coming in
         obs, actions, rewards, dones, next_obs = np.atleast_2d(obs, actions, rewards, dones, next_obs)
 
-        B = obs.shape[0]  # batched number of environments
-        idxs = np.arange(self.pointer, self.pointer + B) % self.max_size
-        self.obs[idxs] = obs
-        self.actions[idxs] = actions
-        self.rewards[idxs] = rewards * self.reward_scale
-        self.dones[idxs] = dones
-        self.next_obs[idxs] = next_obs
+        # store in buffers
+        self.obs_buffer.append(obs)
+        self.actions_buffer.append(actions)
+        self.rewards_buffer.append(rewards)
+        self.dones_buffer.append(dones)
 
-        # step buffer pointer and size
-        self.pointer = (self.pointer + B) % self.max_size
-        self.size = min(self.size + B, self.max_size)
+        # start saving n-steps to memory when buffer is sufficient size
+        if len(self.obs_buffer) == self.n_step_returns:
+            # prep objects to save; note -- done is at n-th step so carries from above
+            obs = self.obs_buffer[0]
+            nth_obs = next_obs.copy()
+            next_obs = self.obs_buffer[1]
+            actions = self.actions_buffer[0]
+            rewards = np.stack(self.rewards_buffer, axis=1).squeeze(2)  # (n_env, n_steps)
+
+            # choose inputs which are not `done` within of the n-step window. e.g. exclude dones = [0,1,0] for n=3
+            #   stack the dones_buffer to (n_envs, n_step_returns, 1), select steps 1: N-1 and exclude env idx if done=1 appears
+            load_idxs = np.where(np.stack(self.dones_buffer, 1)[:,:-1].sum(1) != 1)[0]
+            # save indices for the batched number of environments excluding inputs where done=1 within the n-step window
+            B = len(load_idxs)
+            save_idxs = np.arange(self.pointer, self.pointer + B) % self.max_size
+
+            self.obs[save_idxs] = obs[load_idxs]
+            self.actions[save_idxs] = actions[load_idxs]
+            self.rewards[save_idxs] = rewards[load_idxs] * self.reward_scale
+            self.dones[save_idxs] = dones[load_idxs]
+            self.next_obs[save_idxs] = next_obs[load_idxs]
+            self.nth_obs[save_idxs] = nth_obs[load_idxs]
+
+            # step memory pointer and size
+            self.pointer = (self.pointer + B) % self.max_size
+            self.size = min(self.size + B, self.max_size)
 
     def sample(self, batch_size):
         idxs = np.random.randint(0, self.size, batch_size)
-        return Transition(*np.atleast_2d(self.obs[idxs], self.actions[idxs], self.rewards[idxs], self.dones[idxs], self.next_obs[idxs]))
+        return Transition(*np.atleast_2d(self.obs[idxs], self.actions[idxs], self.rewards[idxs], self.dones[idxs],
+                                            self.next_obs[idxs], self.nth_obs[idxs]))
 
     def initialize(self, env, n_prefill_steps=1000, training=True):
         if not training:
@@ -59,7 +88,15 @@ class Memory:
             self.store_transition(self.current_obs, actions, r, done, next_obs, training)
             self.current_obs = next_obs
 
+        # NOTE -- clearing n-step buffers since env is reset after memory init
+        self.clear_nstep_buffers()
         print('Memory initialized.')
+
+    def clear_nstep_buffers(self):
+        self.obs_buffer.clear()
+        self.actions_buffer.clear()
+        self.rewards_buffer.clear()
+        self.dones_buffer.clear()
 
 class SymmetricMemory(Memory):
 
