@@ -232,12 +232,11 @@ class RewardAugEnv(gym.Wrapper):
         rewards['dy'] = 0.1 if dy**2 < 0.1 else -sigmoid(dy)
         rewards['dz'] = 0.1 if dz > -0.4 else dz
 
-        rewards['height'] = 0 if height > 0.7 else -5
+        rewards['height'] = 0 if height > 0.75 else -5
 
-        rewards['grf_forward'] = - lf*rf
-        rewards['grf_lateral'] = 10*ll*rl
-        rewards['grf_upward']  = - np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
-
+#        rewards['grf_forward'] = - lf*rf
+#        rewards['grf_lateral'] = 10*ll*rl
+#        rewards['grf_upward']  = - np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
 
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
             r -= 100  # remove survival bonus

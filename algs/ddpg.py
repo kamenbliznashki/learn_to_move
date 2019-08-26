@@ -16,7 +16,7 @@ import logger
 
 class DDPG:
     def __init__(self, observation_shape, action_shape, min_action, max_action, *,
-                    policy_hidden_sizes, q_hidden_sizes, discount, tau, q_lr, policy_lr):
+                    policy_hidden_sizes, q_hidden_sizes, discount, tau, q_lr, policy_lr, n_heads):
         self.min_action = min_action
         self.max_action = max_action
         self.tau = tau
@@ -39,54 +39,48 @@ class DDPG:
 
         # build graph
         # 1. networks
-        q = Model('q', hidden_sizes=q_hidden_sizes, activation=tf.nn.selu, output_size=1)
-        q_target = Model('q_target', hidden_sizes=q_hidden_sizes, activation=tf.nn.selu, output_size=1)
-        policy = Model('policy', hidden_sizes=policy_hidden_sizes, activation=tf.tanh, output_size=action_shape[0],
-                            output_activation=tf.tanh)
-        policy_target = Model('policy_target', hidden_sizes=policy_hidden_sizes, activation=tf.tanh,
-                                output_size=action_shape[0], output_activation=tf.tanh)
-#        embed_v_tgt = Model('vtgt_embed', hidden_sizes=[256, 256], output_size=64, activation=tf.tanh, output_activation=tf.tanh)
-#
-#        # split obs from v_tgt_field and embed vtgt
-#        vtgt = self.obs_ph[:,:2*11*11]
-#        next_vtgt = self.next_obs_ph[:,:2*11*11]
-#        embedded_vtgt = embed_v_tgt(vtgt)
-#        embedded_next_vtgt = embed_v_tgt(next_vtgt)
-#        obs = tf.concat([embedded_vtgt, self.obs_ph[:,2*11*11:]], axis=1)
-#        next_obs = tf.concat([embedded_next_vtgt, self.next_obs_ph[:,2*11*11:]], axis=1)
+        qs, q_targets = [], []
+        policies, policy_targets = [], []
+        for i in range(n_heads):
+            qs.append(Model('q_{}'.format(i), hidden_sizes=q_hidden_sizes, output_size=1))
+            q_targets.append(Model('q_target_{}'.format(i), hidden_sizes=q_hidden_sizes, output_size=1))
+            policies.append(Model('policy_{}'.format(i), hidden_sizes=policy_hidden_sizes, output_size=action_shape[0], output_activation=tf.tanh))
+            policy_targets.append(Model('policy_target_{}'.format(i), hidden_sizes=policy_hidden_sizes, output_size=action_shape[0], output_activation=tf.tanh))
 
-        # current q values
-        q_value = q(tf.concat([self.obs_ph, self.actions_ph], 1))
+        # current q values (choose 1 q head to act; train on all)
+        q_value = [q(tf.concat([self.obs_ph, self.actions_ph], 1)) for q in qs]
         # q values at policy action
-        self.actions = max_action * policy(self.obs_ph)
+        self.actions = [max_action * policy(self.obs_ph) for policy in policies]
 #        self.actions = max_action * policy(tf.gather(self.obs_ph, policy_idxs, axis=1))
-        q_value_at_policy_action = q(tf.concat([self.obs_ph, self.actions], 1))
+        self.q_value_at_policy_action = [q(tf.concat([self.obs_ph, action], 1)) for q, action in zip(qs, self.actions)]
 
         # select next action according to the policy_target
-        next_actions = policy_target(self.next_obs_ph)
+        next_actions = [policy_target(self.next_obs_ph) for policy_target in policy_targets]
 #        next_actions = policy_target(tf.gather(self.next_obs_ph, policy_idxs, axis=1))
         # compute q targets
-        q_target_value = q_target(tf.concat([self.next_obs_ph, next_actions], 1))
-        q_target_value = self.rewards_ph + tf.stop_gradient(discount * q_target_value * (1 - self.dones_ph))
+        q_target_value = [q_target(tf.concat([self.next_obs_ph, next_action], 1)) for q_target, next_action in zip(q_targets, next_actions)]
+        q_target_value = [self.rewards_ph + tf.stop_gradient(discount * q_target_value[i] * (1 - self.dones_ph)) for i in range(n_heads)]
 
         # 2. loss on critics and actor
-        self.q_loss = tf.losses.mean_squared_error(q_value, q_target_value)
-        self.policy_loss = - tf.reduce_mean(q_value_at_policy_action)
+        self.q_loss = tf.reduce_mean([tf.losses.mean_squared_error(q_v, q_target_v) for q_v, q_target_v in zip(q_value, q_target_value)])
+        self.policy_loss = - tf.reduce_mean([tf.reduce_mean(self.q_value_at_policy_action[i]) for i in range(n_heads)])
 
         # 3. training
-        self.q_grads = flatgrad(self.q_loss, q.trainable_vars)
-        self.q_optimizer = MpiAdam(var_list=q.vars, scale_grad_by_procs=False)
-        self.policy_grads = flatgrad(self.policy_loss, policy.trainable_vars)
-        self.policy_optimizer = MpiAdam(var_list=policy.vars, scale_grad_by_procs=False)
+        self.q_grads = flatgrad(self.q_loss, [i for q in qs for i in q.trainable_vars])
+        self.q_optimizer = MpiAdam(var_list=[i for q in qs for i in q.vars], scale_grad_by_procs=False)
+        self.policy_grads = flatgrad(self.policy_loss, [i for policy in policies for i in policy.trainable_vars])
+        self.policy_optimizer = MpiAdam(var_list=[i for policy in policies for i in policy.vars], scale_grad_by_procs=False)
         world_size = MPI.COMM_WORLD.Get_size()
         self.update_global_step = tf.assign_add(tf.train.get_or_create_global_step(), world_size)
         #   target update ops
-        self.target_update_ops = tf.group(self.create_target_update_op(q, q_target) +
-                                          self.create_target_update_op(policy, policy_target))
+        self.target_update_ops = [tf.group(self.create_target_update_op(q, q_target) +
+                                           self.create_target_update_op(policy, policy_target))
+                                    for q, q_target, policy, policy_target in zip(qs, q_targets, policies, policy_targets)]
 
         # init target networks
-        self.target_init_ops = tf.group(self.create_target_init_op(q, q_target) +
+        self.target_init_ops = [tf.group(self.create_target_init_op(q, q_target) +
                                         self.create_target_init_op(policy, policy_target))
+                                    for q, q_target, policy, policy_target in zip(qs, q_targets, policies, policy_targets)]
 
     def create_target_init_op(self, source, target):
         return [tf.assign(t, s) for t, s in zip(target.vars, source.vars)]
@@ -102,8 +96,23 @@ class DDPG:
         self.q_optimizer.sync()
         self.sess.run(self.target_init_ops)
 
-    def get_actions(self, obs, expl_noise=0):
+    def get_actions(self, obs, expl_noise=0, head_idxs=None):
         actions = self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
+        actions = np.stack(actions, axis=1)  # (n_env, n_heads, action_dim)
+
+        if head_idxs is not None:
+            actions = actions[np.arange(actions.shape[0]), head_idxs]  # for each env select the head_idx
+        else:
+            actions = np.squeeze(actions, 0)            # (n_heads, action dim)
+            obs = np.tile(obs, (actions.shape[0], 1))   # (n_heads, obs dim)
+            # batch actions from each policy and run action-obs through each q function; out (n_heads, 1)
+            qs = self.sess.run(self.q_value_at_policy_action, {self.obs_ph: obs, self.actions_ph: actions})
+            qs = np.vstack(qs)
+            # normalize q values
+            qs /= qs.sum(1, keepdims=True)
+            # select action at highest q value
+            actions = actions[qs.argmax()]
+
         if expl_noise != 0:
             actions += np.random.normal(0, expl_noise, actions.shape)
             actions = np.clip(actions, self.min_action, self.max_action)
@@ -128,6 +137,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     max_memory_size = alg_args.pop('max_memory_size', int(1e6))
     n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
     reward_scale = alg_args.pop('reward_scale', 1.)
+    n_heads = alg_args.get('n_heads', 1)
 
     np.random.seed(int(seed + 1e6*args.rank))
     tf.set_random_seed(int(seed + 1e6*args.rank))
@@ -140,8 +150,9 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     agent.initialize(sess)
     saver = tf.train.Saver()
     sess.graph.finalize()
-    memory.initialize(env, n_prefill_steps, training=not args.load_path)
+    memory.initialize(env, n_prefill_steps, training=not args.play)
     obs = env.reset()
+    head_idxs = np.random.randint(0, n_heads, (env.num_envs,))
 
     # setup tracking
     stats = {}
@@ -161,7 +172,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         tic = time.time()
 
         # sample action -> step env -> store transition
-        actions = agent.get_actions(obs, expl_noise)
+        actions = agent.get_actions(obs, expl_noise, head_idxs)
         next_obs, r, done, _ = env.step(actions)
         done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
         memory.store_transition(obs, actions, r, done_bool, next_obs)
@@ -180,6 +191,8 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
                 # reset counters
                 episode_rewards[d] = 0
                 episode_lengths[d] = 0
+                # select a new head
+                head_idxs[d] = np.random.randint(0, n_heads)
 
         # train
         batch = memory.sample(batch_size)
@@ -234,7 +247,8 @@ def defaults(env_name=None):
                 'batch_size': 128,
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': 1000,
-                'reward_scale': 1}
+                'reward_scale': 1,
+                'n_heads': 2}
     else:  # mujoco
         n_prefill_steps = {
             'Ant-v2': 10000,

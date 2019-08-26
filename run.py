@@ -169,7 +169,7 @@ def main(args, extra_args):
                 episode_rewards = 0
                 episode_steps = 0
                 i = input('enter random seed: ')
-                obs = env.reset(seed=int(i))
+                obs = env.reset(seed=int(i) if i is not '' else None)
 
     env.close()
     return agent
