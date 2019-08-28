@@ -2,7 +2,7 @@ from collections import namedtuple, deque
 import numpy as np
 
 
-Transition = namedtuple('Transition', ['obs', 'actions', 'rewards', 'dones', 'next_obs', 'nth_obs'])
+Transition = namedtuple('Transition', ['obs', 'actions', 'rewards', 'dones', 'next_obs'])
 
 class Memory:
     def __init__(self, max_size, observation_shape, action_shape, reward_scale, n_step_returns, dtype='float32'):
@@ -17,7 +17,6 @@ class Memory:
         self.rewards  = np.zeros((max_size, n_step_returns)).astype(dtype)
         self.dones    = np.zeros((max_size, 1)).astype(dtype)
         self.next_obs = np.zeros((max_size, *self.observation_shape)).astype(dtype)
-        self.nth_obs  = np.zeros((max_size, *self.observation_shape)).astype(dtype)
 
         self.max_size = max_size
         self.pointer = 0
@@ -45,16 +44,16 @@ class Memory:
 
         # start saving n-steps to memory when buffer is sufficient size
         if len(self.obs_buffer) == self.n_step_returns:
-            # prep objects to save; note -- done is at n-th step so carries from above
+            # prep objects to save
+            # NOTE  n-step q value is ∑gamme^i * r + gamma^N * q(x_N, a_N) * (1 - dones);
+            #       => dones are at n-th step and we are excluding all inputs in buffers where done=1 appears during the n steps
             obs = self.obs_buffer[0]
-            nth_obs = next_obs.copy()
-            next_obs = self.obs_buffer[1]
             actions = self.actions_buffer[0]
             rewards = np.stack(self.rewards_buffer, axis=1).squeeze(2)  # (n_env, n_steps)
 
             # choose inputs which are not `done` within of the n-step window. e.g. exclude dones = [0,1,0] for n=3
             #   stack the dones_buffer to (n_envs, n_step_returns, 1), select steps 1: N-1 and exclude env idx if done=1 appears
-            load_idxs = np.where(np.stack(self.dones_buffer, 1)[:,:-1].sum(1) != 1)[0]
+            load_idxs = np.where(np.stack(self.dones_buffer, 2).sum(-1) != 1)[0]
             # save indices for the batched number of environments excluding inputs where done=1 within the n-step window
             B = len(load_idxs)
             save_idxs = np.arange(self.pointer, self.pointer + B) % self.max_size
@@ -64,7 +63,6 @@ class Memory:
             self.rewards[save_idxs] = rewards[load_idxs] * self.reward_scale
             self.dones[save_idxs] = dones[load_idxs]
             self.next_obs[save_idxs] = next_obs[load_idxs]
-            self.nth_obs[save_idxs] = nth_obs[load_idxs]
 
             # step memory pointer and size
             self.pointer = (self.pointer + B) % self.max_size
@@ -72,8 +70,7 @@ class Memory:
 
     def sample(self, batch_size):
         idxs = np.random.randint(0, self.size, batch_size)
-        return Transition(*np.atleast_2d(self.obs[idxs], self.actions[idxs], self.rewards[idxs], self.dones[idxs],
-                                            self.next_obs[idxs], self.nth_obs[idxs]))
+        return Transition(*np.atleast_2d(self.obs[idxs], self.actions[idxs], self.rewards[idxs], self.dones[idxs], self.next_obs[idxs]))
 
     def initialize(self, env, n_prefill_steps=1000, training=True):
         if not training:

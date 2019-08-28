@@ -29,7 +29,6 @@ class DDPG:
         self.rewards_ph = tf.placeholder(tf.float32, [None, n_step_returns], name='rewards')
         self.dones_ph = tf.placeholder(tf.float32, [None, 1], name='dones')
         self.next_obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='next_obs')
-        self.nth_obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='nth_obs')
 
         # obs indices to pass to policy and q function
         # policy gets pelvis hight pitch roll, joints, fiber lengths -- no velocity
@@ -55,12 +54,12 @@ class DDPG:
         q_value_at_policy_action = q(tf.concat([self.obs_ph, self.actions], 1))
 
         # select next action according to the policy_target
-        nth_actions = policy_target(self.nth_obs_ph)
+        next_actions = policy_target(self.next_obs_ph)
 #        next_actions = policy_target(tf.gather(self.next_obs_ph, policy_idxs, axis=1))
         # compute q targets
-        q_target_value = q_target(tf.concat([self.nth_obs_ph, nth_actions], 1))
-        q_target_value = tf.reduce_sum(self.rewards_ph * discount**np.arange(n_step_returns)) + \
-                            tf.stop_gradient(discount**n_step_returns * q_target_value * (1 - self.dones_ph))
+        q_nth_value = q_target(tf.concat([self.next_obs_ph, next_actions], 1))
+        q_target_value = tf.reduce_sum(self.rewards_ph * discount**np.arange(n_step_returns), axis=1, keepdims=True) + \
+                            tf.stop_gradient(discount**n_step_returns * q_nth_value * (1 - self.dones_ph))
 
         # 2. loss on critics and actor
         self.q_loss = tf.losses.mean_squared_error(q_value, q_target_value)
@@ -109,7 +108,7 @@ class DDPG:
         policy_grads, _, q_grads, _, _ = self.sess.run(
                 [self.policy_grads, self.policy_loss, self.q_grads, self.q_loss, self.update_global_step],
                 feed_dict={self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
-                    self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs, self.nth_obs_ph: batch.nth_obs})
+                    self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
         self.policy_optimizer.update(policy_grads, stepsize=self.policy_lr)
         self.q_optimizer.update(q_grads, stepsize=self.q_lr)
 
