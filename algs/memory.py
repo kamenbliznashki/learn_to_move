@@ -5,10 +5,9 @@ import numpy as np
 Transition = namedtuple('Transition', ['obs', 'actions', 'rewards', 'dones', 'next_obs'])
 
 class Memory:
-    def __init__(self, max_size, observation_shape, action_shape, reward_scale, dtype='float32'):
+    def __init__(self, max_size, observation_shape, action_shape, dtype='float32'):
         self.observation_shape = observation_shape
         self.action_shape = action_shape
-        self.reward_scale = reward_scale
         self.dtype = dtype
 
         self.obs      = np.zeros((max_size, *self.observation_shape)).astype(dtype)
@@ -34,7 +33,7 @@ class Memory:
         idxs = np.arange(self.pointer, self.pointer + B) % self.max_size
         self.obs[idxs] = obs
         self.actions[idxs] = actions
-        self.rewards[idxs] = rewards * self.reward_scale
+        self.rewards[idxs] = rewards
         self.dones[idxs] = dones
         self.next_obs[idxs] = next_obs
 
@@ -46,15 +45,16 @@ class Memory:
         idxs = np.random.randint(0, self.size, batch_size)
         return Transition(*np.atleast_2d(self.obs[idxs], self.actions[idxs], self.rewards[idxs], self.dones[idxs], self.next_obs[idxs]))
 
-    def initialize(self, env, n_prefill_steps=1000, training=True):
+    def initialize(self, env, n_prefill_steps=1000, training=True, policy=None):
         if not training:
             return
-        # prefill memory using uniform exploration
+
+        # prefill memory using uniform exploration or policy provided
         if self.current_obs is None:
             self.current_obs = env.reset()
 
         for _ in range(n_prefill_steps):
-            actions = np.random.uniform(-1, 1, (env.num_envs,) + self.action_shape)
+            actions = np.random.uniform(-1, 1, (env.num_envs,) + self.action_shape) if policy is None else policy.get_actions(self.current_obs)
             next_obs, r, done, _ = env.step(actions)
             self.store_transition(self.current_obs, actions, r, done, next_obs, training)
             self.current_obs = next_obs
@@ -93,14 +93,16 @@ class SymmetricMemory(Memory):
         leg_next_obs = body_next_obs[:,9:]
 
         #   2. flip legs
-        leg_obs = np.flipud(leg_obs.reshape(B,2,-1)).flatten()
-        leg_next_obs = np.flipud(leg_next_obs.reshape(B,2,-1)).flatten()
+        leg_obs = np.flipud(leg_obs.reshape(B,2,-1)).reshape(B,-1)
+        leg_next_obs = np.flipud(leg_next_obs.reshape(B,2,-1)).reshape(B,-1)
 
         #   3. flip sign of pelvis roll (right->left), y-velocity, roll, yaw
         pelvis_obs[:,[2,4,7,8]] *= -1
         pelvis_next_obs[:,[2,4,7,8]] *= -1
 
-        #   save mirred to buffer
+        #   save mirrored to buffer -- NOTE need to add mirrored vtgt here
+        m_obs = np.hstack([pelvis_obs, leg_obs])
+        m_next_obs = np.hstack([pelvis_next_obs, leg_next_obs])
         super().store_transition(m_obs, m_actions, rewards, dones, m_next_obs, training)
         del m_actions, m_obs
 

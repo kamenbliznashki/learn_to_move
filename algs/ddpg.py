@@ -138,21 +138,22 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     batch_size = alg_args.pop('batch_size', 256)
     max_memory_size = alg_args.pop('max_memory_size', int(1e6))
     n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
-    reward_scale = alg_args.pop('reward_scale', 1.)
 
     np.random.seed(int(seed + 1e6*args.rank))
     tf.set_random_seed(int(seed + 1e6*args.rank))
 
-    memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape, reward_scale)
+    memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
     agent = DDPG(env.observation_space.shape, env.action_space.shape, env.action_space.low[0], env.action_space.high[0], **alg_args)
 
-    # initialize session, agent and memory
+    # initialize session, agent, saver
     sess = tf.get_default_session()
     agent.initialize(sess)
     saver = tf.train.Saver()
     sess.graph.finalize()
-    memory.initialize(env, n_prefill_steps, training=not args.load_path)
-    obs = env.reset()
+    if args.load_path is not None:
+        saver.restore(sess, args.load_path)
+        start_step = sess.run(tf.train.get_global_step()) + 1
+        print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
 
     # setup tracking
     stats = {}
@@ -163,10 +164,9 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     n_episodes = 0
     start_step = 1
 
-    if args.load_path is not None:
-        saver.restore(sess, args.load_path)
-        start_step = sess.run(tf.train.get_global_step()) + 1
-        print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
+    # init memory and env
+    memory.initialize(env, n_prefill_steps, training=not args.load_path, policy=agent if args.load_path else None)
+    obs = env.reset()
 
     for t in range(start_step, n_total_steps + start_step):
         tic = time.time()
@@ -247,7 +247,6 @@ def defaults(env_name=None):
                 'batch_size': 128,
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': 1000,
-                'reward_scale': 1,
                 'state_predictor_hidden_sizes': (64, 64),
                 'n_state_predictors': 5}
     else:  # mujoco
@@ -268,6 +267,5 @@ def defaults(env_name=None):
                 'policy_lr': 1e-3,
                 'batch_size': 64,
                 'max_memory_size': int(1e6),
-                'n_prefill_steps': n_prefill_steps,
-                'reward_scale': 1}
+                'n_prefill_steps': n_prefill_steps}
 
