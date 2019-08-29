@@ -68,13 +68,14 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
 class Obs2VecEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env)
-        obs_dim = env.observation_space.shape[0] - 2*11*11
+        obs_dim = env.observation_space.shape[0] - 2*11*11   # NOTE NOTE NOTE
         self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
 
     def obs2vec(self, obs_dict):
         # Augmented environment from the L2R challenge
         res = []
 
+        # NOTE NOTE NOTE --- removed for now
         # target velocity field (in body frame)
 #        res += obs_dict['v_tgt_field'].flatten().tolist()
 
@@ -119,11 +120,11 @@ class RandomPoseInitEnv(gym.Wrapper):
             state = np.random.get_state()
             np.random.seed(seed)
 
-        y_vel = np.random.uniform(-1,1)
-        leg1 = [np.random.uniform(np.pi/4, 1.25*np.pi/3), -1.5, -1.5, np.random.uniform(-0.7,0.7)]
-        leg2 = [0, np.random.uniform(-0.5, 0.5), np.random.uniform(-0.25, -0.015), np.random.uniform(-0.935,0.935)]
+        y_vel = np.random.uniform(-0.25, 0.25)
+        leg1 = [0, np.random.uniform(-0.4, 0), np.random.uniform(-1.75, -1.25), np.random.uniform(-0.5, -0.9)]  # foot in the air
+        leg2 = [0, np.random.uniform(-0.05, 0.25), np.random.uniform(-0.25, -0.015), -0.25]
 
-        pose = [np.random.uniform(0.5, 2),
+        pose = [np.random.uniform(0.5, 3.5),
                 y_vel,
                 0.94,
                 np.random.uniform(-0.25, 0.25)]
@@ -196,16 +197,6 @@ class PoolVTgtEnv(gym.Wrapper):
         o = self.env.reset(**kwargs)
         return self.pool_vtgt(o)
 
-class FallPenaltyEnv(gym.Wrapper):
-    def step(self, action):
-        o, r, d, i = self.env.step(action)
-
-        # if pelvis below 0.6, OsimEnv returns done; penalize this
-        if o['pelvis']['height'] < 0.6:
-            r -= 10
-
-        return o, r, d, i
-
 class RewardAugEnv(gym.Wrapper):
     def step(self, action):
         o, r, d, i = self.env.step(action)
@@ -228,15 +219,16 @@ class RewardAugEnv(gym.Wrapper):
         rewards['roll']  = - np.clip(roll * droll, a_min=0, a_max=None)
         rewards['yaw']   = - np.clip(yaw * dyaw, a_min=0, a_max=None)
 
-        rewards['dx'] = np.tanh(dx)
-        rewards['dy'] = 0.1 if dy**2 < 0.1 else -sigmoid(dy)
-        rewards['dz'] = 0.1 if dz > -0.4 else dz
+        rewards['dx'] = 3 * np.tanh(dx)
+        rewards['dy'] = 1 - np.tanh(4*dy)**2
+        rewards['dz'] = 1 - np.tanh(dz)**2
 
-        rewards['height'] = 0 if height > 0.75 else -5
+        rewards['height'] = 0 if height > 0.7 else -5
 
 #        rewards['grf_forward'] = - lf*rf
-#        rewards['grf_lateral'] = 10*ll*rl
-#        rewards['grf_upward']  = - np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
+        rewards['grf_lateral'] = 10*ll*rl
+        rewards['grf_upward']  = - 10 * np.clip(lu*ru, 0, 0.1) - (lu==ru) #np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
+
 
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
             r -= 100  # remove survival bonus

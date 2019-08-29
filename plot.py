@@ -10,7 +10,7 @@ parser.add_argument('logdirs', nargs='*')
 parser.add_argument('--recurse', '-r', action='store_true')
 
 
-def plot_from_dirs(logdirs, metric='avg_episode_length', metric_std='std_episode_length'):
+def plot_from_dirs(logdirs, metric='avg_return', metric_std='std_return'):
     # collect data csv's
     data = []
     for logdir in logdirs:
