@@ -89,7 +89,7 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
         env = RandomPoseInitEnv(env)
 #        env = NoopResetEnv(env)
         env = ZeroOneActionsEnv(env)
-#        env = PoolVTgtEnv(env)  # NOTE -- needs to be after RewardAug if RewardAug uses the full vtgt field
+        env = PoolVTgtEnv(env)  # NOTE -- needs to be after RewardAug if RewardAug uses the full vtgt field
         env = RewardAugEnv(env)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
@@ -169,7 +169,7 @@ def main(args, extra_args):
                 episode_rewards = 0
                 episode_steps = 0
                 i = input('enter random seed: ')
-                obs = env.reset(seed=int(i))
+                obs = env.reset(seed=int(i) if i is not '' else None)
 
     env.close()
     return agent
