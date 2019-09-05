@@ -125,8 +125,8 @@ def main(args, extra_args):
         from mpi4py import MPI
     else:
         MPI = None
-    args.rank = MPI.COMM_WORLD.Get_rank() if MPI is not None else 0
-    args.world_size = MPI.COMM_WORLD.Get_size() if MPI is not None else 1
+    args.rank = 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
+    args.world_size = 1 if MPI is None else MPI.COMM_WORLD.Get_size()
 
     # setup logging
     if args.load_path:
@@ -174,6 +174,7 @@ def main(args, extra_args):
                 episode_steps = 0
                 i = input('enter random seed: ')
                 obs = env.reset(seed=int(i) if i is not '' else None)
+    env.close()
 
     if args.submission:
         import opensim as osim
@@ -203,7 +204,6 @@ def main(args, extra_args):
                 if not obs:
                     break
 
-    env.close()
     return agent
 
 

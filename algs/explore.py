@@ -2,7 +2,6 @@ import numpy as np
 import tensorflow as tf
 
 from algs.models import Model
-from mpi_adam import MpiAdam, flatgrad
 
 
 class DisagreementExploration:
@@ -32,21 +31,19 @@ class DisagreementExploration:
                                     for pred in self.pred_next_obs])
 
         # 3. training
-        self.grads = flatgrad(self.loss, [var for model in state_predictors for var in model.trainable_vars])
-        self.optimizer = MpiAdam(var_list=[var for model in state_predictors for var in model.vars], scale_grad_by_procs=False)
+        optimizer = tf.train.AdamOptimizer(lr, name='optimizer')
+        self.train_op = optimizer.minimize(self.loss, var_list=[var for model in state_predictors for var in model.vars])
 
     def initialize(self, sess):
         self.sess = sess
-        self.optimizer.sync()
 
     def get_exploration_bonus(self, obs, actions):
         pred_next_obs = self.sess.run(self.pred_next_obs, {self.obs_ph: obs, self.actions_ph: actions})
         return np.var(pred_next_obs)
 
     def train(self, batch):
-        grads, loss = self.sess.run([self.grads, self.loss],
+        loss, _ = self.sess.run([self.loss, self.train_op],
                 feed_dict={self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.next_obs_ph: batch.next_obs})
-        self.optimizer.update(grads, stepsize=self.lr)
         return loss
 
 
