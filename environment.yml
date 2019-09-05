@@ -95,6 +95,7 @@ dependencies:
     - tensorboard==1.14.0
     - tensorflow==1.14.0
     - tensorflow-estimator==1.14.0
+    - tensorflow-probability==0.7.0
     - timeout-decorator==0.4.1
     - toml==0.10.0
     - traitlets==4.3.2
