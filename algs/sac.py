@@ -123,7 +123,10 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     sess = tf.get_default_session()
     agent.initialize(sess)
     exploration.initialize(sess)
-    saver = tf.train.Saver()
+    # backward compatible to models that used mpi_adam -- ie only save and restore non-optimizer vars
+    vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
+    restore_dict = {var.op.name: var for var in tf.global_variables() if var.op.name in vars_to_restore}
+    saver = tf.train.Saver(restore_dict)
     sess.graph.finalize()
     if args.load_path is not None:
         saver.restore(sess, args.load_path)
