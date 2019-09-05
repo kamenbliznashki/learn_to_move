@@ -68,7 +68,6 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
 class ClientWrapper:
     def __init__(self, client=None):
         self.client = client
-        return self
 
     def step(self, action):
         return self.client.env_step(action.tolist())
