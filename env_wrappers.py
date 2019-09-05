@@ -66,7 +66,10 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
         return super().reset(obs_as_dict=obs_as_dict, **kwargs)
 
 class ClientWrapper:
-    # conform to gym env, which can be wrapped later
+    # L2M variables
+    LENGTH0 = 1 # leg length
+
+    # gym env variables -- conform to gym env, so can be wrapped later
     metadata = {'render.modes': []}
     reward_range = (-float('inf'), float('inf'))
     spec = None
