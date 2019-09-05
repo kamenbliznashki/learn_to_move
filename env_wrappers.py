@@ -68,6 +68,11 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
 class ClientWrapper:
     def __init__(self, client=None):
         self.client = client
+        # setup properties that follow-on wrappers use
+        obs_dim = 339
+        act_dim = 22
+        self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
+        self.action_space = gym.spaces.Box(np.zeros(act_dim), np.ones(act_dim))
 
     def step(self, action):
         return self.client.env_step(action.tolist())
