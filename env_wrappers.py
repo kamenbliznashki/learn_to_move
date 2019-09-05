@@ -136,6 +136,9 @@ class Obs2VecEnv(gym.Wrapper):
         o = self.env.reset(**kwargs)
         return self.obs2vec(o)
 
+    def create(self):
+        return self.obs2vec(self.env.create())
+
 class RandomPoseInitEnv(gym.Wrapper):
     def reset(self, **kwargs):
         seed = kwargs.get('seed', None)
@@ -208,6 +211,9 @@ class PoolVTgtEnv(gym.Wrapper):
     def reset(self, **kwargs):
         o = self.env.reset(**kwargs)
         return self.pool_vtgt(o)
+
+    def create(self):
+        return self.pool_vtgt(self.env.create())
 
 class RewardAugEnv(gym.Wrapper):
     def step(self, action):

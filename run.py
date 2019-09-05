@@ -174,7 +174,6 @@ def main(args, extra_args):
                 episode_steps = 0
                 i = input('enter random seed: ')
                 obs = env.reset(seed=int(i) if i is not '' else None)
-    env.close()
 
     if args.submission:
         import opensim as osim
@@ -188,12 +187,12 @@ def main(args, extra_args):
         )
 
         env = ClientWrapper(client)
-        obs = env.create()
-
         env = ZeroOneActionsEnv(env)
         env = PoolVTgtEnv(env)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
+
+        obs = env.create()
 
         while True:
             action = agent.get_actions(obs)
