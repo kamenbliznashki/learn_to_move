@@ -9,15 +9,18 @@ import numpy as np
 import tensorflow.compat.v1 as tf
 tf.logging.set_verbosity(tf.logging.ERROR)
 
-from mpi4py import MPI
-
-import gym
 from env_wrappers import DummyVecEnv, SubprocVecEnv, Monitor, L2M2019EnvBaseWrapper, RandomPoseInitEnv, \
-                            ZeroOneActionsEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv
+                            ZeroOneActionsEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv, ClientWrapper
 from logger import save_json
+
+try:
+    from mpi4py import MPI
+except ImportError:
+    MPI = None
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--play', action='store_true')
+parser.add_argument('--submission', action='store_true')
 
 parser.add_argument('env', type=str, help='Environment id (e.g. HalfCheetah-v2 or L2M2019).')
 parser.add_argument('alg', type=str, help='Algorithm name -- module where agent and learn function reside.')
@@ -94,6 +97,7 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
     else:
+        import gym
         env = gym.envs.make(env_name)
         env.seed(seed + subrank if seed is not None else None)
 
@@ -121,8 +125,8 @@ def main(args, extra_args):
     env_args = get_env_config(args.env, extra_args.__dict__)
     alg_args = get_alg_config(args.alg, args.env, extra_args.__dict__)
 
-    args.rank = MPI.COMM_WORLD.Get_rank()
-    args.world_size = MPI.COMM_WORLD.Get_size()
+    args.rank = MPI.COMM_WORLD.Get_rank() if MPI is not None else 0
+    args.world_size = MPI.COMM_WORLD.Get_size() if MPI is not None else 1
 
     # setup logging
     if args.load_path:
@@ -148,7 +152,7 @@ def main(args, extra_args):
     agent = learn(env, args.seed, args.n_total_steps, args.max_episode_length, alg_args, args)
 
     if args.play:
-        if env_args: env_args['visualize'] = True
+        env_args['visualize'] = True
         env = make_single_env(args.env, args.rank, args.n_env + 100, args.seed, env_args, args.output_dir)
         obs = env.reset()
         episode_rewards = 0
@@ -170,6 +174,34 @@ def main(args, extra_args):
                 episode_steps = 0
                 i = input('enter random seed: ')
                 obs = env.reset(seed=int(i) if i is not '' else None)
+
+    if args.submission:
+        import opensim as osim
+        from osim.redis.client import Client
+
+        REMOTE_HOST = os.getenv("AICROWD_EVALUATOR_HOST", "127.0.0.1")
+        REMOTE_PORT = os.getenv("AICROWD_EVALUATOR_PORT", 6379)
+        client = Client(
+            remote_host=REMOTE_HOST,
+            remote_port=REMOTE_PORT
+        )
+
+        env = ClientWrapper(client)
+        obs = env.create()
+
+        env = ZeroOneActionsEnv(env)
+        env = PoolVTgtEnv(env)
+        env = SkipEnv(env)
+        env = Obs2VecEnv(env)
+
+        while True:
+            action = agent.get_actions(obs)
+            next_obs, rew, done, _ = env.step(action.flatten())
+            obs = next_obs
+            if done:
+                obs = env.reset()
+                if not obs:
+                    break
 
     env.close()
     return agent

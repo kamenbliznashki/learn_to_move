@@ -100,10 +100,21 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     np.random.seed(seed)
     tf.set_random_seed(seed)
 
+    # unpack variables
     max_memory_size = alg_args.pop('max_memory_size', int(1e6))
     n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
     batch_size = alg_args.pop('batch_size', 256)
 
+    # setup tracking
+    stats = {}
+    episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
+    episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
+    episode_rewards_history = deque(maxlen=100)
+    episode_lengths_history = deque(maxlen=100)
+    n_episodes = 0
+    start_step = 1
+
+    # set up agent
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
     agent = SAC(env.observation_space.shape, env.action_space.shape, **alg_args)
     exploration = DisagreementExploration(env.observation_space.shape, env.action_space.shape)
@@ -119,17 +130,8 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         start_step = sess.run(tf.train.get_global_step()) + 1
         print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
 
-    # setup tracking
-    stats = {}
-    episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
-    episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
-    episode_rewards_history = deque(maxlen=100)
-    episode_lengths_history = deque(maxlen=100)
-    n_episodes = 0
-    start_step = 1
-
     # init memory and env for training
-    memory.initialize(env, n_prefill_steps, training=not args.play, policy=agent if args.load_path else None)
+    memory.initialize(env, n_prefill_steps, training=not (args.play or args.submission), policy=agent if args.load_path else None)
     obs = env.reset()
 
     for t in range(start_step, n_total_steps + start_step):

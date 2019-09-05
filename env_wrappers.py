@@ -65,6 +65,20 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
         obs_as_dict = kwargs.pop('obs_as_dict', True)
         return super().reset(obs_as_dict=obs_as_dict, **kwargs)
 
+class ClientWrapper:
+    def __init__(self, client=None):
+        self.client = client
+        return self
+
+    def step(self, action):
+        return self.client.env_step(action.tolist())
+
+    def reset(self):
+        return self.client.env_reset()
+
+    def create(self):
+        return self.client.env_create()
+
 class Obs2VecEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env)

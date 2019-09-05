@@ -20,7 +20,6 @@ dependencies:
   - lapack=3.6.1
   - libcxx=8.0.0
   - libcxxabi=8.0.0
-  - libgfortran=3.0.1
   - libgpuarray=0.7.6
   - libprotobuf=3.8.0
   - mako=1.0.10
@@ -69,7 +68,6 @@ dependencies:
     - kiwisolver==1.1.0
     - lockfile==0.12.2
     - matplotlib==3.1.1
-    - mujoco-py==2.0.2.4
     - numpy==1.16.4
     - osim-rl==3.0.2
     - pillow==6.1.0
