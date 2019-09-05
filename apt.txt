@@ -1,0 +1,4 @@
+cmake
+libopenmpi-dev
+python3-dev
+zlib1g-dev
