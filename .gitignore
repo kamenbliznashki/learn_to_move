@@ -1,5 +1,7 @@
 results/
 __pycache__/
+.local/
+
 *.pyc
 
 # gym files
