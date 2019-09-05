@@ -13,10 +13,6 @@ from env_wrappers import DummyVecEnv, SubprocVecEnv, Monitor, L2M2019EnvBaseWrap
                             ZeroOneActionsEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv, ClientWrapper
 from logger import save_json
 
-try:
-    from mpi4py import MPI
-except ImportError:
-    MPI = None
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--play', action='store_true')
@@ -125,6 +121,10 @@ def main(args, extra_args):
     env_args = get_env_config(args.env, extra_args.__dict__)
     alg_args = get_alg_config(args.alg, args.env, extra_args.__dict__)
 
+    if 'mpi' in args.alg.lower():
+        from mpi4py import MPI
+    else:
+        MPI = None
     args.rank = MPI.COMM_WORLD.Get_rank() if MPI is not None else 0
     args.world_size = MPI.COMM_WORLD.Get_size() if MPI is not None else 1
 
