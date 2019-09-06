@@ -65,7 +65,7 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
         obs_as_dict = kwargs.pop('obs_as_dict', True)
         return super().reset(obs_as_dict=obs_as_dict, **kwargs)
 
-class ClientWrapper:
+class L2M2019ClientWrapper:
     # L2M variables
     LENGTH0 = 1 # leg length
 
@@ -92,18 +92,20 @@ class ClientWrapper:
         return self.client.env_create()
 
 class Obs2VecEnv(gym.Wrapper):
-    def __init__(self, env=None, **kwargs):
-        super().__init__(env)
-        obs_dim = env.observation_space.shape[0] - 2*3 #2*11*11   # NOTE NOTE NOTE
-        self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
+#    def __init__(self, env=None, **kwargs):
+#        super().__init__(env)
+#        # NOTE NOTE NOTE -- if removing the vtgt from the obs vector below; need to update the dims here;
+#        #                    the previous env wrapper PoolVtgtEnv adjusted for the pooling operation
+#        #                    NOTE this should match what the state predictors exploration models take in as offset to indices selected
+#        obs_dim = env.observation_space.shape[0] - 2*3 #2*11*11
+#        self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
 
     def obs2vec(self, obs_dict):
         # Augmented environment from the L2R challenge
         res = []
 
-        # NOTE NOTE NOTE --- removed for now
         # target velocity field (in body frame)
-#        res += obs_dict['v_tgt_field'].flatten().tolist()
+        res += obs_dict['v_tgt_field'].flatten().tolist()  # NOTE NOTE NOTE -- this should match what the state predictors exploration models take in as offset to indices selected
 
         res.append(obs_dict['pelvis']['height'])
         res.append(obs_dict['pelvis']['pitch'])
@@ -137,6 +139,8 @@ class Obs2VecEnv(gym.Wrapper):
 
     def reset(self, **kwargs):
         o = self.env.reset(**kwargs)
+        if not o:  # submission client returns False at the end
+            return o
         return self.obs2vec(o)
 
     def create(self):
@@ -198,7 +202,7 @@ class ZeroOneActionsEnv(gym.Wrapper):
 class PoolVTgtEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env, **kwargs)
-        obs_dim = env.observation_space.shape[0] - 2*11*11 + 2*3
+        obs_dim = env.observation_space.shape[0] - 2*11*11 + 2*3  # NOTE NOTE NOTE -- this should sync with exploration state predictor indexing into the state obs vector
         self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
 
     def pool_vtgt(self, obs):
@@ -213,6 +217,8 @@ class PoolVTgtEnv(gym.Wrapper):
 
     def reset(self, **kwargs):
         o = self.env.reset(**kwargs)
+        if not o:  # submission client returns False at end
+            return o
         return self.pool_vtgt(o)
 
     def create(self):
@@ -233,8 +239,8 @@ class RewardAugEnv(gym.Wrapper):
 #        rf, rl, ru = o['r_leg']['ground_reaction_forces']
 
         # gyroscope -- penalize pitch and roll
-        rewards['pitch'] = - 2 * np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting, then clamped to 0, otherwise positive penalty
-        rewards['roll']  = - 2 * np.clip(roll * droll, a_min=0, a_max=None)
+        rewards['pitch'] = - 2 * np.clip(pitch * dpitch, a_min=0, a_max=1) # if in different direction ie counteracting, then clamped to 0, otherwise positive penalty
+        rewards['roll']  = - 2 * np.clip(roll * droll, a_min=0, a_max=1)
 #        rewards['yaw']   = - np.clip(yaw * dyaw, a_min=0, a_max=None)
 
 #        rewards['dx'] = 1 * np.tanh(dx)

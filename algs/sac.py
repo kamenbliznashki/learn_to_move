@@ -104,6 +104,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     max_memory_size = alg_args.pop('max_memory_size', int(1e6))
     n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
     batch_size = alg_args.pop('batch_size', 256)
+    global best_ep_length
 
     # setup tracking
     stats = {}
@@ -124,9 +125,13 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     agent.initialize(sess)
     exploration.initialize(sess)
     # backward compatible to models that used mpi_adam -- ie only save and restore non-optimizer vars
-    vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
-    restore_dict = {var.op.name: var for var in tf.global_variables() if var.op.name in vars_to_restore}
-    saver = tf.train.Saver(restore_dict)
+    if n_total_steps == 0:
+        vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
+        restore_dict = {var.op.name: var for var in tf.global_variables() if var.op.name in vars_to_restore}
+        saver = tf.train.Saver(restore_dict)
+    else:
+        saver = tf.train.Saver()  # keep track of all vars for training; only use non-optim vars for eval
+        best_saver = tf.train.Saver(max_to_keep=1)
     sess.graph.finalize()
     if args.load_path is not None:
         saver.restore(sess, args.load_path)
@@ -134,7 +139,7 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
 
     # init memory and env for training
-    memory.initialize(env, n_prefill_steps, training=not (args.play or args.submission), policy=agent if args.load_path else None)
+    memory.initialize(env, n_prefill_steps, training=(n_total_steps > 0), policy=agent if args.load_path else None)
     obs = env.reset()
 
     for t in range(start_step, n_total_steps + start_step):
@@ -170,6 +175,9 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         # save
         if t % args.save_interval == 0:
             saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
+            if best_ep_length < ep_lengths_mean:
+                best_ep_length = ep_lengths_mean
+                best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
 
         # log stats
         if t % args.log_interval == 0:

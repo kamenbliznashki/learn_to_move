@@ -5,15 +5,17 @@ import numpy as np
 import tensorflow as tf
 from tabulate import tabulate
 
-from mpi4py import MPI
-
 from algs.memory import Memory
 from algs.models import GaussianPolicy, Model
 from algs.explore import DisagreementExploration
-from mpi_adam import MpiAdam, flatgrad
-from mpi_utils import mpi_moments
 import logger
 
+try:
+    from mpi4py import MPI
+    from mpi_adam import MpiAdam, flatgrad
+    from mpi_utils import mpi_moments
+except ImportError:
+    MPI = None
 
 class DDPG:
     def __init__(self, observation_shape, action_shape, min_action, max_action, *,
@@ -33,18 +35,18 @@ class DDPG:
 
         # build graph
         # 1. networks
-        q = Model('q', hidden_sizes=q_hidden_sizes, activation=tf.nn.selu, output_size=1)
+        self.q = Model('q', hidden_sizes=q_hidden_sizes, activation=tf.nn.selu, output_size=1)
         q_target = Model('q_target', hidden_sizes=q_hidden_sizes, activation=tf.nn.selu, output_size=1)
-        policy = Model('policy', hidden_sizes=policy_hidden_sizes, activation=tf.tanh, output_size=action_shape[0],
+        self.policy = Model('policy', hidden_sizes=policy_hidden_sizes, activation=tf.tanh, output_size=action_shape[0],
                             output_activation=tf.tanh)
         policy_target = Model('policy_target', hidden_sizes=policy_hidden_sizes, activation=tf.tanh,
                                 output_size=action_shape[0], output_activation=tf.tanh)
 
         # current q values
-        q_value = q(tf.concat([self.obs_ph, self.actions_ph], 1))
+        q_value = self.q(tf.concat([self.obs_ph, self.actions_ph], 1))
         # q values at policy action
-        self.actions = max_action * policy(self.obs_ph)
-        q_value_at_policy_action = q(tf.concat([self.obs_ph, self.actions], 1))
+        self.actions = max_action * self.policy(self.obs_ph)
+        q_value_at_policy_action = self.q(tf.concat([self.obs_ph, self.actions], 1))
 
         # select next action according to the policy_target
         next_actions = policy_target(self.next_obs_ph)
@@ -57,19 +59,19 @@ class DDPG:
         self.policy_loss = - tf.reduce_mean(q_value_at_policy_action)
 
         # 3. training
-        self.q_grads = flatgrad(self.q_loss, q.trainable_vars)
-        self.q_optimizer = MpiAdam(var_list=q.vars, scale_grad_by_procs=False)
-        self.policy_grads = flatgrad(self.policy_loss, policy.trainable_vars)
-        self.policy_optimizer = MpiAdam(var_list=policy.vars, scale_grad_by_procs=False)
-        world_size = MPI.COMM_WORLD.Get_size()
-        self.update_global_step = tf.assign_add(tf.train.get_or_create_global_step(), world_size)
+        self.q_optimizer = tf.train.AdamOptimizer(q_lr, name='q_optimizer')
+        self.policy_optimizer = tf.train.AdamOptimizer(policy_lr, name='policy_optimizer')
+        self.update_global_step = tf.assign_add(tf.train.get_or_create_global_step(), 1)
+        self.train_ops = [self.q_optimizer.minimize(self.q_loss, var_list=self.q.trainable_vars),
+                          self.policy_optimizer.minimize(self.policy_loss, var_list=self.policy.trainable_vars),
+                          self.update_global_step]
         #   target update ops
-        self.target_update_ops = tf.group(self.create_target_update_op(q, q_target) +
-                                          self.create_target_update_op(policy, policy_target))
+        self.target_update_ops = tf.group(self.create_target_update_op(self.q, q_target) +
+                                          self.create_target_update_op(self.policy, policy_target))
 
         # init target networks
-        self.target_init_ops = tf.group(self.create_target_init_op(q, q_target) +
-                                        self.create_target_init_op(policy, policy_target))
+        self.target_init_ops = tf.group(self.create_target_init_op(self.q, q_target) +
+                                        self.create_target_init_op(self.policy, policy_target))
 
     def create_target_init_op(self, source, target):
         return [tf.assign(t, s) for t, s in zip(target.vars, source.vars)]
@@ -81,8 +83,6 @@ class DDPG:
         tf.train.get_or_create_global_step()
         self.sess = sess
         self.sess.run(tf.global_variables_initializer())
-        self.policy_optimizer.sync()
-        self.q_optimizer.sync()
         self.sess.run(self.target_init_ops)
 
     def get_actions(self, obs, expl_noise=0):
@@ -96,38 +96,47 @@ class DDPG:
         self.sess.run(self.target_update_ops)
 
     def train(self, batch):
-        policy_grads, _, q_grads, _, _ = self.sess.run(
-                [self.policy_grads, self.policy_loss, self.q_grads, self.q_loss, self.update_global_step],
+        self.sess.run(self.train_ops,
+                feed_dict={self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
+                           self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
+
+class DDPGMPI(DDPG):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # overwrite train ops
+        self.q_grads = flatgrad(self.q_loss, self.q.trainable_vars)
+        self.policy_grads = flatgrad(self.policy_loss, self.policy.trainable_vars)
+        world_size = MPI.COMM_WORLD.Get_size()
+        self.q_optimizer = MpiAdam(var_list=self.q.trainable_vars, scale_grad_by_procs=False)
+        self.policy_optimizer = MpiAdam(var_list=self.policy.trainable_vars, scale_grad_by_procs=False)
+        self.update_global_step = tf.assign_add(tf.train.get_or_create_global_step(), world_size)
+        self.train_ops = [self.policy_grads, self.policy_loss, self.q_grads, self.q_loss, self.update_global_step]
+
+    def initialize(self, sess):
+        super().initialize(sess)
+        self.policy_optimizer.sync()
+        self.q_optimizer.sync()
+        self.sess.run(self.target_init_ops)
+
+    def train(self, batch):
+        policy_grads, _, q_grads, _, _ = self.sess.run(self.train_ops,
                 feed_dict={self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
                            self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
         self.policy_optimizer.update(policy_grads, stepsize=self.policy_lr)
         self.q_optimizer.update(q_grads, stepsize=self.q_lr)
 
-
 def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
-    # extract training and memory buffer args
-    expl_noise = alg_args.pop('expl_noise', 0)
-    batch_size = alg_args.pop('batch_size', 256)
-    max_memory_size = alg_args.pop('max_memory_size', int(1e6))
-    n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
 
     np.random.seed(int(seed + 1e6*args.rank))
     tf.set_random_seed(int(seed + 1e6*args.rank))
 
-    memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
-    agent = DDPG(env.observation_space.shape, env.action_space.shape, env.action_space.low[0], env.action_space.high[0], **alg_args)
-    exploration = DisagreementExploration(env.observation_space.shape, env.action_space.shape)
-
-    # initialize session, agent, saver
-    sess = tf.get_default_session()
-    agent.initialize(sess)
-    exploration.initialize(sess)
-    saver = tf.train.Saver()
-    sess.graph.finalize()
-    if args.load_path is not None:
-        saver.restore(sess, args.load_path)
-        start_step = sess.run(tf.train.get_global_step()) + 1
-        print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
+    # unpack variables
+    expl_noise = alg_args.pop('expl_noise', 0)
+    batch_size = alg_args.pop('batch_size', 256)
+    max_memory_size = alg_args.pop('max_memory_size', int(1e6))
+    n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
+    global best_ep_length
 
     # setup tracking
     stats = {}
@@ -136,10 +145,35 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     episode_rewards_history = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
     n_episodes = 0
+    ep_lengths_mean = 0
     start_step = 1
 
+    # set up agent
+    memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
+    agent = DDPG if MPI is None else DDPGMPI
+    agent = agent(env.observation_space.shape, env.action_space.shape, env.action_space.low[0], env.action_space.high[0], **alg_args)
+    exploration = DisagreementExploration(env.observation_space.shape, env.action_space.shape)
+
+    # initialize session, agent, saver
+    sess = tf.get_default_session()
+    agent.initialize(sess)
+    exploration.initialize(sess)
+    # compatibility with models trained with mpi_adam - keep track of all vars for training; only use non-optim vars for eval
+    if n_total_steps == 0:
+        vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
+        restore_dict = {var.op.name: var for var in tf.global_variables() if var.op.name in vars_to_restore}
+        saver = tf.train.Saver(restore_dict)
+    else:
+        saver = tf.train.Saver()
+        best_saver = tf.train.Saver(max_to_keep=1)
+    sess.graph.finalize()
+    if args.load_path is not None:
+        saver.restore(sess, args.load_path)
+        start_step = sess.run(tf.train.get_global_step()) + 1
+        print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
+
     # init memory and env
-    memory.initialize(env, n_prefill_steps, training=not args.load_path, policy=agent if args.load_path else None)
+    memory.initialize(env, n_prefill_steps, training=(n_total_steps > 0), policy=agent if args.load_path else None)
     obs = env.reset()
 
     for t in range(start_step, n_total_steps + start_step):
@@ -176,15 +210,27 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         # save
         if t % args.save_interval == 0 and args.rank == 0:
             saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
+            if best_ep_length <= ep_lengths_mean:
+                best_ep_length = ep_lengths_mean
+                best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
 
         # log stats
         if t % args.log_interval == 0:
-            ep_rewards_mean, ep_rewards_std, _ = mpi_moments(episode_rewards_history)
-            ep_lengths_mean, ep_lengths_std, _ = mpi_moments(episode_lengths_history)
-            n_episodes_mean, _, n_episodes_count = mpi_moments([n_episodes])
+            if MPI is not None:
+                ep_rewards_mean, ep_rewards_std, _ = mpi_moments(episode_rewards_history)
+                ep_lengths_mean, ep_lengths_std, _ = mpi_moments(episode_lengths_history)
+                n_episodes_mean, _, n_episodes_count = mpi_moments([n_episodes])
+                episodes_count = n_episodes_mean * n_episodes_count
+            else:
+                ep_rewards_mean = np.mean(episode_rewards_history)
+                ep_rewards_std  = np.std(episode_rewards_history)
+                ep_lengths_mean = np.mean(episode_lengths_history)
+                ep_lengths_std  = np.std(episode_lengths_history)
+                episodes_count = n_episodes
+
             toc = time.time()
             stats['timestep'] = args.world_size * t
-            stats['episodes'] = n_episodes_mean * n_episodes_count
+            stats['episodes'] = episodes_count
             stats['steps_per_second'] = args.world_size * args.log_interval / (toc - tic)
             stats['avg_return'] = ep_rewards_mean
             stats['std_return'] = ep_rewards_std
@@ -195,11 +241,12 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
                 print(tabulate(stats.items(), tablefmt='rst'))
 
         # different threads have different seeds
-        local_uniform = np.random.uniform(size=(1,))
-        root_uniform = local_uniform.copy()
-        MPI.COMM_WORLD.Bcast(root_uniform, root=0)
-        if args.rank != 0:
-            assert local_uniform[0] != root_uniform[0], '{} vs {}'.format(local_uniform[0], root_uniform[0])
+        if MPI is not None:
+            local_uniform = np.random.uniform(size=(1,))
+            root_uniform = local_uniform.copy()
+            MPI.COMM_WORLD.Bcast(root_uniform, root=0)
+            if args.rank != 0:
+                assert local_uniform[0] != root_uniform[0], '{} vs {}'.format(local_uniform[0], root_uniform[0])
 
     return agent
 

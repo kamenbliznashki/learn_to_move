@@ -10,9 +10,13 @@ import tensorflow.compat.v1 as tf
 tf.logging.set_verbosity(tf.logging.ERROR)
 
 from env_wrappers import DummyVecEnv, SubprocVecEnv, Monitor, L2M2019EnvBaseWrapper, RandomPoseInitEnv, \
-                            ZeroOneActionsEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv, ClientWrapper
+                            ZeroOneActionsEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv, L2M2019ClientWrapper
 from logger import save_json
 
+try:
+    from mpi4py import MPI
+except ImportError:
+    MPI = None
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--play', action='store_true')
@@ -32,6 +36,7 @@ parser.add_argument('--output_dir', type=str)
 parser.add_argument('--save_interval', default=1000, type=int)
 parser.add_argument('--log_interval', default=1000, type=int)
 
+best_ep_length = float('-inf')
 
 # --------------------
 # Config
@@ -117,18 +122,15 @@ def build_env(args, env_args):
 # --------------------
 
 def main(args, extra_args):
-    # configure args for environment and algorithm; update defaults with extra_args
+    # env and algorithm config; update defaults with extra_args
     env_args = get_env_config(args.env, extra_args.__dict__)
     alg_args = get_alg_config(args.alg, args.env, extra_args.__dict__)
 
-    if 'mpi' in args.alg.lower():
-        from mpi4py import MPI
-    else:
-        MPI = None
+    # mpi config
     args.rank = 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
     args.world_size = 1 if MPI is None else MPI.COMM_WORLD.Get_size()
 
-    # setup logging
+    # logging config
     if args.load_path:
         args.output_dir = os.path.dirname(args.load_path)
     if not args.output_dir:  # if not given use results/file_name/time_stamp
@@ -136,7 +138,7 @@ def main(args, extra_args):
         args.output_dir = os.path.join('results', logdir)
         if args.rank == 0: os.makedirs(args.output_dir)
 
-    # print and save config
+    # print and save all configs
     if args.rank == 0: print_and_save_config(args, env_args, alg_args)
 
     # build environment
@@ -167,7 +169,6 @@ def main(args, extra_args):
 #                agent.get_action_value(np.atleast_2d(obs), action).squeeze(), rew, episode_rewards))
             obs = next_obs
             env.render()
-#            time.sleep(0.5)
             if done:
                 print('Episode length {}; cumulative reward: {:.2f}'.format(episode_steps, episode_rewards))
                 episode_rewards = 0
@@ -186,7 +187,7 @@ def main(args, extra_args):
             remote_port=REMOTE_PORT
         )
 
-        env = ClientWrapper(client)
+        env = L2M2019ClientWrapper(client)
         env = ZeroOneActionsEnv(env)
         env = PoolVTgtEnv(env)
         env = SkipEnv(env)
