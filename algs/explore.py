@@ -6,8 +6,9 @@ from algs.models import Model
 
 class DisagreementExploration:
     def __init__(self, observation_shape, action_shape, *,
-                    lr=1e-3, state_predictor_hidden_sizes=[64, 64], n_state_predictors=5):
+                    lr=1e-3, state_predictor_hidden_sizes=[64, 64], n_state_predictors=5, bonus_scale=100):
         self.lr = lr
+        self.bonus_scale = bonus_scale
 
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
@@ -50,12 +51,12 @@ class DisagreementExploration:
     def initialize(self, sess):
         self.sess = sess
 
-    def get_exploration_bonus(self, obs, actions, scale=100):
+    def get_exploration_bonus(self, obs, actions):
         normed_pred_next_obs = self.sess.run(self.normed_pred_next_obs, {self.obs_ph: obs, self.actions_ph: actions})
         # bonus is variance among the state predictors and along the predicted state vector
         #   ie a/ incent disagreement among the state predictors (explore state they can't model well);
         #      b/ incent exploring diverse state vectors; eg left-right leg mid-stride having opposite signs is higher var than standing / legs in same position
-        return scale * np.var(normed_pred_next_obs, axis=(1,2))[:,None]
+        return self.bonus_scale * np.var(normed_pred_next_obs, axis=(1,2))[:,None]
 
     def train(self, batch):
         loss, _ = self.sess.run([self.loss, self.train_op],
@@ -71,5 +72,6 @@ def defaults(class_name=None):
     if class_name == 'DisagreementExploration':
         return {'n_state_predictors': 5,
                 'state_predictor_hidden_sizes': (64, 64),
-                'lr': 1e-3}
+                'lr': 1e-3,
+                'bonus_scale': 100}
 
