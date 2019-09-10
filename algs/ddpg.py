@@ -45,7 +45,7 @@ class DDPG:
                                 output_size=action_shape[0], output_activation=tf.tanh)
 
         # current q values
-        q_value = self.q(tf.concat([self.obs_ph, self.actions_ph], 1))
+        self.q_value = self.q(tf.concat([self.obs_ph, self.actions_ph], 1))
         # q values at policy action
         self.actions = max_action * self.policy(self.obs_ph)
         q_value_at_policy_action = self.q(tf.concat([self.obs_ph, self.actions], 1))
@@ -57,7 +57,7 @@ class DDPG:
         q_target_value = self.rewards_ph + tf.stop_gradient(discount * q_target_value * (1 - self.dones_ph))
 
         # 2. loss on critics and actor
-        self.q_loss = tf.losses.mean_squared_error(q_value, q_target_value)
+        self.q_loss = tf.losses.mean_squared_error(self.q_value, q_target_value)
         self.policy_loss = - tf.reduce_mean(q_value_at_policy_action)
 
         # 3. training
@@ -94,6 +94,9 @@ class DDPG:
             actions = np.clip(actions, self.min_action, self.max_action)
         return actions
 
+    def get_action_value(self, obs, actions):
+        return self.sess.run(self.q_value, {self.obs_ph: obs, self.actions_ph: actions})
+
     def update_target_net(self):
         self.sess.run(self.target_update_ops)
 
@@ -120,6 +123,16 @@ class DDPGMPI(DDPG):
         self.policy_optimizer.sync()
         self.q_optimizer.sync()
         self.sess.run(self.target_init_ops)
+
+    def get_actions(self, obs, expl_noise=0):
+        actions = self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
+        if expl_noise != 0:
+            actions += np.random.normal(0, expl_noise, actions.shape)
+            actions = np.clip(actions, self.min_action, self.max_action)
+        return actions
+
+    def get_action_value(self, obs, actions):
+        return self.sess.run(self.q_value, {self.obs_ph: obs, self.actions_ph: actions})
 
     def train(self, batch):
         policy_grads, _, q_grads, _, _ = self.sess.run(self.train_ops,
