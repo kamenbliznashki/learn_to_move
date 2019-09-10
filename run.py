@@ -24,6 +24,7 @@ parser.add_argument('--submission', action='store_true')
 
 parser.add_argument('env', type=str, help='Environment id (e.g. HalfCheetah-v2 or L2M2019).')
 parser.add_argument('alg', type=str, help='Algorithm name -- module where agent and learn function reside.')
+parser.add_argument('--explore', default='DisagreementExploration', type=str, help='Exploration class name within explore module.')
 parser.add_argument('--seed', default=1, type=int)
 parser.add_argument('--exp_name', default='exp', type=str)
 # training params
@@ -68,14 +69,16 @@ def get_env_config(env, extra_args=None):
         env_args.update({k: v for k, v in extra_args.items() if k in env_args})
     return env_args
 
-def print_and_save_config(args, env_args, alg_args):
+def print_and_save_config(args, env_args, alg_args, expl_args):
     print('Building environment and agent with the following config:')
     print(' Run config:\n' + pprint.pformat(args.__dict__))
     print(' Env config: ' + args.env + (env_args is not None)*('\n' + pprint.pformat(env_args)))
     print(' Alg config: ' + args.alg + '\n' + pprint.pformat(alg_args))
+    print(' Exp config: ' + args.explore + (expl_args is not None)*('\n' + pprint.pformat(expl_args)))
     save_json(args.__dict__, os.path.join(args.output_dir, 'config_run.json'))
-    if env_args: save_json(env_args, os.path.join(args.output_dir, 'config_env.json'))
     save_json(alg_args, os.path.join(args.output_dir, 'config_alg.json'))
+    if env_args: save_json(env_args, os.path.join(args.output_dir, 'config_env.json'))
+    if expl_args: save_json(expl_args, os.path.join(args.output_dir, 'config_exp.json'))
 
 
 # --------------------
@@ -95,7 +98,7 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
         env = ZeroOneActionsEnv(env)
         env = PoolVTgtEnv(env)  # NOTE -- needs to be after RewardAug if RewardAug uses the full vtgt field
         env = RewardAugEnv(env)
-        env = SkipEnv(env)
+#        env = SkipEnv(env)
         env = Obs2VecEnv(env)
     else:
         import gym
@@ -138,20 +141,28 @@ def main(args, extra_args):
         args.output_dir = os.path.join('results', logdir)
         if args.rank == 0: os.makedirs(args.output_dir)
 
-    # print and save all configs
-    if args.rank == 0: print_and_save_config(args, env_args, alg_args)
-
     # build environment
     env = build_env(args, env_args)
+
+    # build exploration module and defaults
+    exploration = None
+    expl_args = None
+    if args.explore:
+        expl_args = getattr(import_module('algs.explore'), 'defaults')(args.explore)
+        exploration = getattr(import_module('algs.explore'), args.explore)
+        exploration = exploration(env.observation_space.shape, env.action_space.shape, **expl_args)
 
     # init session
     tf_config = tf.ConfigProto(allow_soft_placement=True, inter_op_parallelism_threads=1, intra_op_parallelism_threads=1)
     tf_config.gpu_options.allow_growth = True
     sess = tf.InteractiveSession(config=tf_config)
 
+    # print and save all configs
+    if args.rank == 0: print_and_save_config(args, env_args, alg_args, expl_args)
+
     # build and train agent
     learn = getattr(import_module('algs.' + args.alg), 'learn')
-    agent = learn(env, args.seed, args.n_total_steps, args.max_episode_length, alg_args, args)
+    agent = learn(env, exploration, args.seed, args.n_total_steps, args.max_episode_length, alg_args, args)
 
     if args.play:
         env_args['visualize'] = True
@@ -160,13 +171,14 @@ def main(args, extra_args):
         episode_rewards = 0
         episode_steps = 0
         while True:
-#            i = input('press key to continue ...')
+            i = input('press key to continue ...')
             action = agent.get_actions(obs)
             next_obs, rew, done, _ = env.step(action.flatten())
+            r_bonus = exploration.get_exploration_bonus(np.atleast_2d(obs), action).squeeze()
             episode_rewards += rew
             episode_steps += 1
-#            print('q value: {:.4f}; reward: {:.2f}; reward so far: {:.2f}'.format(
-#                agent.get_action_value(np.atleast_2d(obs), action).squeeze(), rew, episode_rewards))
+            print('q value: {:.4f}; reward: {:.2f}; bonus: {:.2f}; reward so far: {:.2f}'.format(
+                agent.get_action_value(np.atleast_2d(obs), action).squeeze(), rew, r_bonus, episode_rewards))
             obs = next_obs
             env.render()
             if done:

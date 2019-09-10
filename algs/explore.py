@@ -15,10 +15,11 @@ class DisagreementExploration:
         self.next_obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='next_obs')
 
         # obs indices to model using the state predictors; NOTE idx 0 here is in the obs vector after the v_tgt_field, ie starting with pelvis
-        idxs = np.array([*list(range(9)),                        # pelvis
-                         *list(range(12,16)),                    # joints r leg
-                         *list(range(20+3*11+3,20+3*11+3+4))])   # joints l leg
+        idxs = np.array([*list(range(9)),                        # pelvis       (9 obs)
+                         *list(range(12,16)),                    # joints r leg (4 obs)
+                         *list(range(20+3*11+3,20+3*11+3+4))])   # joints l leg (4 obs)
         idxs += 2*3  # offset for v_tgt_field -- NOTE NOTE NOTE -- this should match the obs2vec offset (if excluding vtgt) and the poolvtgtenv given the pooling size
+#        idxs = list(range(observation_shape[0]))  # state predictors model the full state space vec
 
         # build graph
         # 1. networks
@@ -61,4 +62,14 @@ class DisagreementExploration:
                 feed_dict={self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.next_obs_ph: batch.next_obs})
         return loss
 
+
+# --------------------
+# defaults
+# --------------------
+
+def defaults(class_name=None):
+    if class_name == 'DisagreementExploration':
+        return {'n_state_predictors': 5,
+                'state_predictor_hidden_sizes': (64, 64),
+                'lr': 1e-3}
 

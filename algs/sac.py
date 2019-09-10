@@ -15,6 +15,7 @@ from algs.models import GaussianPolicy, Model
 from algs.explore import DisagreementExploration
 import logger
 
+best_ep_length = float('-inf')
 
 class SAC:
     def __init__(self, observation_shape, action_shape, *,
@@ -44,6 +45,7 @@ class SAC:
         #   q values loss terms
         q1_at_memory_action = q1(tf.concat([self.obs_ph, self.actions_ph], 1))
         q2_at_memory_action = q2(tf.concat([self.obs_ph, self.actions_ph], 1))
+        self.q_at_memory_action = tf.minimum(q1_at_memory_action, q2_at_memory_action)
         q1_loss = tf.losses.mean_squared_error(q1_at_memory_action, target_q)
         q2_loss = tf.losses.mean_squared_error(q2_at_memory_action, target_q)
         #   policy loss term
@@ -86,7 +88,7 @@ class SAC:
         return actions
 
     def get_action_value(self, obs, actions):
-        return self.sess.run(self.q_value_at_memory_action, {self.obs_ph: obs, self.actions_ph: actions})
+        return self.sess.run(self.q_at_memory_action, {self.obs_ph: obs, self.actions_ph: actions})
 
     def update_target_net(self):
         self.sess.run(self.target_update_ops)
@@ -95,7 +97,7 @@ class SAC:
         self.sess.run(self.train_ops, {self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
                                        self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
 
-def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
+def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, args):
 
     np.random.seed(seed)
     tf.set_random_seed(seed)
@@ -109,21 +111,23 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     # setup tracking
     stats = {}
     episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
+    episode_bonus   = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
     episode_rewards_history = deque(maxlen=100)
+    episode_bonus_history   = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
     n_episodes = 0
+    ep_lengths_mean = 0
     start_step = 1
 
     # set up agent
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
     agent = SAC(env.observation_space.shape, env.action_space.shape, **alg_args)
-    exploration = DisagreementExploration(env.observation_space.shape, env.action_space.shape)
 
     # initialize session, agent, saver
     sess = tf.get_default_session()
     agent.initialize(sess)
-    exploration.initialize(sess)
+    if exploration is not None: exploration.initialize(sess)
     # backward compatible to models that used mpi_adam -- ie only save and restore non-optimizer vars
     if n_total_steps == 0:
         vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
@@ -148,22 +152,25 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         # sample action -> step env -> store transition
         actions = agent.get_actions(obs)
         next_obs, r, done, _ = env.step(actions)
-        r += exploration.get_exploration_bonus(obs, actions)
-        memory.store_transition(obs, actions, r, done, next_obs)
+        r_bonus = exploration.get_exploration_bonus(obs, actions) if exploration is not None else 0
+        memory.store_transition(obs, actions, r + r_bonus, done, next_obs)
         obs = next_obs
 
         # keep records
         episode_rewards += r
+        episode_bonus   += r_bonus
         episode_lengths += 1
 
         # end of episode -- when all envs are done or max_episode length is reached, reset
         if any(done):
             for d in np.nonzero(done)[0]:
                 episode_rewards_history.append(float(episode_rewards[d]))
+                episode_bonus_history.append(float(episode_bonus[d]))
                 episode_lengths_history.append(int(episode_lengths[d]))
                 n_episodes += 1
                 # reset counters
                 episode_rewards[d] = 0
+                episode_bonus[d] = 0
                 episode_lengths[d] = 0
 
         # train
@@ -188,6 +195,8 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
             stats['expl_loss'] = expl_loss
             stats['avg_return'] = np.mean(episode_rewards_history)
             stats['std_return'] = np.std(episode_rewards_history)
+            stats['avg_bonus'] = np.mean(episode_bonus_history)
+            stats['std_bonus'] = np.std(episode_bonus_history)
             stats['avg_episode_length'] = np.mean(episode_lengths_history)
             stats['std_episode_length'] = np.std(episode_lengths_history)
             logger.save_csv(stats, args.output_dir + '/log.csv')

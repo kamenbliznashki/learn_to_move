@@ -239,11 +239,11 @@ class RewardAugEnv(gym.Wrapper):
 #        rf, rl, ru = o['r_leg']['ground_reaction_forces']
 
         # gyroscope -- penalize pitch and roll
-        rewards['pitch'] = - 2 * np.clip(pitch * dpitch, a_min=0, a_max=1) # if in different direction ie counteracting, then clamped to 0, otherwise positive penalty
-        rewards['roll']  = - 2 * np.clip(roll * droll, a_min=0, a_max=1)
-#        rewards['yaw']   = - np.clip(yaw * dyaw, a_min=0, a_max=None)
+        rewards['pitch'] = - 1 * np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
+        rewards['roll']  = - 1 * np.clip(roll * droll, a_min=0, a_max=None)
+#        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
-#        rewards['dx'] = 1 * np.tanh(dx)
+        rewards['dx'] = 3 * np.tanh(0.5*dx)
         rewards['dy'] = - np.tanh(2*dy)**2
         rewards['dz'] = - np.tanh(dz)**2
 
@@ -254,8 +254,8 @@ class RewardAugEnv(gym.Wrapper):
 #        rewards['grf_upward']  = - 10 * np.clip(lu*ru, 0, 0.1) - (lu==ru) #np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
 
         # vtgt field rewards -- target yaw
-        rewards['dx'] = 2*(1 - np.tanh(dx - dx_tgt.mean())**2)
-        rewards['dyaw'] = 1 - np.tanh(1.5*(dy_tgt.mean() - dyaw))**2
+        rewards['dx_target'] = 1 - np.tanh(dx - dx_tgt.mean())**2
+#        rewards['dyaw_target'] = 1 - np.tanh(1.5*(dy_tgt.mean() - dyaw))**2
 
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
             r -= 100  # remove survival bonus

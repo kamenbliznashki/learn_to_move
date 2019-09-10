@@ -17,6 +17,8 @@ try:
 except ImportError:
     MPI = None
 
+best_ep_length = float('-inf')
+
 class DDPG:
     def __init__(self, observation_shape, action_shape, min_action, max_action, *,
                     policy_hidden_sizes, q_hidden_sizes, discount, tau, q_lr, policy_lr):
@@ -126,7 +128,7 @@ class DDPGMPI(DDPG):
         self.policy_optimizer.update(policy_grads, stepsize=self.policy_lr)
         self.q_optimizer.update(q_grads, stepsize=self.q_lr)
 
-def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
+def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, args):
 
     np.random.seed(int(seed + 1e6*args.rank))
     tf.set_random_seed(int(seed + 1e6*args.rank))
@@ -141,8 +143,10 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     # setup tracking
     stats = {}
     episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
+    episode_bonus   = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
     episode_rewards_history = deque(maxlen=100)
+    episode_bonus_history   = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
     n_episodes = 0
     ep_lengths_mean = 0
@@ -152,12 +156,11 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
     agent = DDPG if MPI is None else DDPGMPI
     agent = agent(env.observation_space.shape, env.action_space.shape, env.action_space.low[0], env.action_space.high[0], **alg_args)
-    exploration = DisagreementExploration(env.observation_space.shape, env.action_space.shape)
 
     # initialize session, agent, saver
     sess = tf.get_default_session()
     agent.initialize(sess)
-    exploration.initialize(sess)
+    if exploration is not None: exploration.initialize(sess)
     # compatibility with models trained with mpi_adam - keep track of all vars for training; only use non-optim vars for eval
     if n_total_steps == 0:
         vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
@@ -182,23 +185,26 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         # sample action -> step env -> store transition
         actions = agent.get_actions(obs, expl_noise)
         next_obs, r, done, _ = env.step(actions)
-        r += exploration.get_exploration_bonus(obs, actions)
+        r_bonus = exploration.get_exploration_bonus(obs, actions) if exploration is not None else 0
         done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
-        memory.store_transition(obs, actions, r, done_bool, next_obs)
+        memory.store_transition(obs, actions, r + r_bonus, done_bool, next_obs)
         obs = next_obs
 
         # keep records
         episode_rewards += r
+        episode_bonus   += r_bonus
         episode_lengths += 1
 
         # end of episode -- when all envs are done or max_episode length is reached, reset
         if any(done):
             for d in np.nonzero(done)[0]:
                 episode_rewards_history.append(float(episode_rewards[d]))
+                episode_bonus_history.append(float(episode_bonus[d]))
                 episode_lengths_history.append(int(episode_lengths[d]))
                 n_episodes += 1
                 # reset counters
                 episode_rewards[d] = 0
+                episode_bonus[d] = 0
                 episode_lengths[d] = 0
 
         # train
@@ -218,15 +224,18 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
         if t % args.log_interval == 0:
             if MPI is not None:
                 ep_rewards_mean, ep_rewards_std, _ = mpi_moments(episode_rewards_history)
+                ep_bonus_mean, ep_bonus_std, _  = mpi_moments(episode_bonus_history)
                 ep_lengths_mean, ep_lengths_std, _ = mpi_moments(episode_lengths_history)
                 n_episodes_mean, _, n_episodes_count = mpi_moments([n_episodes])
                 episodes_count = n_episodes_mean * n_episodes_count
             else:
                 ep_rewards_mean = np.mean(episode_rewards_history)
                 ep_rewards_std  = np.std(episode_rewards_history)
+                ep_bonus_mean   = np.mean(episode_bonus_history)
+                ep_bonus_std    = np.std(episode_bonus_history)
                 ep_lengths_mean = np.mean(episode_lengths_history)
                 ep_lengths_std  = np.std(episode_lengths_history)
-                episodes_count = n_episodes
+                episodes_count  = n_episodes
 
             toc = time.time()
             stats['timestep'] = args.world_size * t
@@ -234,6 +243,8 @@ def learn(env, seed, n_total_steps, max_episode_length, alg_args, args):
             stats['steps_per_second'] = args.world_size * args.log_interval / (toc - tic)
             stats['avg_return'] = ep_rewards_mean
             stats['std_return'] = ep_rewards_std
+            stats['avg_bonus'] = ep_bonus_mean
+            stats['std_bonus'] = ep_bonus_std
             stats['avg_episode_length'] = ep_lengths_mean
             stats['std_episode_length'] = ep_lengths_std
             if args.rank == 0:
