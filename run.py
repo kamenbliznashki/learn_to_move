@@ -11,7 +11,7 @@ tf.logging.set_verbosity(tf.logging.ERROR)
 
 from env_wrappers import DummyVecEnv, SubprocVecEnv, Monitor, L2M2019EnvBaseWrapper, RandomPoseInitEnv, \
                             ZeroOneActionsEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv, L2M2019ClientWrapper
-from logger import save_json
+from logger import save_json, load_json
 
 try:
     from mpi4py import MPI
@@ -126,6 +126,9 @@ def build_env(args, env_args):
 
 def main(args, extra_args):
     # env and algorithm config; update defaults with extra_args
+    if args.load_path:
+        extra_args.__dict__.update(load_json(os.path.join(os.path.dirname(args.load_path), 'config_alg.json')))
+        if args.explore: extra_args.__dict__.update(load_json(os.path.join(os.path.dirname(args.load_path), 'config_exp.json')))
     env_args = get_env_config(args.env, extra_args.__dict__)
     alg_args = get_alg_config(args.alg, args.env, extra_args.__dict__)
 
