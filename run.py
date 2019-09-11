@@ -131,6 +131,10 @@ def main(args, extra_args):
         if args.explore: extra_args.__dict__.update(load_json(os.path.join(os.path.dirname(args.load_path), 'config_exp.json')))
     env_args = get_env_config(args.env, extra_args.__dict__)
     alg_args = get_alg_config(args.alg, args.env, extra_args.__dict__)
+    expl_args = None
+    if args.explore:
+        expl_args = getattr(import_module('algs.explore'), 'defaults')(args.explore)
+        expl_args.update({k: v for k, v in extra_args.__dict__.items() if k in expl_args})
 
     # mpi config
     args.rank = 0 if MPI is None else MPI.COMM_WORLD.Get_rank()
@@ -149,9 +153,7 @@ def main(args, extra_args):
 
     # build exploration module and defaults
     exploration = None
-    expl_args = None
     if args.explore:
-        expl_args = getattr(import_module('algs.explore'), 'defaults')(args.explore)
         exploration = getattr(import_module('algs.explore'), args.explore)
         exploration = exploration(env.observation_space.shape, env.action_space.shape, **expl_args)
 
