@@ -157,7 +157,9 @@ class RandomPoseInitEnv(gym.Wrapper):
         leg1 = [0, np.random.uniform(-0.4, 0), np.random.uniform(-1.75, -1.25), np.random.uniform(-0.5, -0.9)]  # foot in the air
         leg2 = [0, np.random.uniform(-0.05, 0.25), np.random.uniform(-0.25, -0.015), -0.25]
 
-        pose = [np.random.uniform(0.5, 3.5),
+        x_vel = np.clip(np.abs(np.random.normal(0, 1.25)), a_min=None, a_max=3.5)
+        x_vel = np.where(x_vel < 0.15, np.zeros_like(x_vel), x_vel)   # ~ 10% of the time starts with 0 speed
+        pose = [x_vel,
                 y_vel,
                 0.94,
                 np.random.uniform(-0.25, 0.25)]
