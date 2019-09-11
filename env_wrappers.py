@@ -202,13 +202,21 @@ class ZeroOneActionsEnv(gym.Wrapper):
 class PoolVTgtEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env, **kwargs)
-        obs_dim = env.observation_space.shape[0] - 2*11*11 + 2*3  # NOTE NOTE NOTE -- this should sync with exploration state predictor indexing into the state obs vector
+        obs_dim = env.observation_space.shape[0] - 2*11*11 + 1*3  # NOTE NOTE NOTE -- this should sync with exploration state predictor indexing into the state obs vector
         self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
 
     def pool_vtgt(self, obs):
+        # pool v_tgt_field to 3x3 map then pool dy over x coord and dx over y coord; return one-hot indicator of the argmin
+        #   ie y vtgt is the 3 positions one step above current y coord, current y coord, one step below current y coord
         vtgt = obs['v_tgt_field'].swapaxes(1,2)[:,::-1,:]  # transpose and flip over x coord to match matplotliv quiver so easier to interpret
         pooled_vtgt = vtgt.reshape(2,11,11)[:,::2,::2].reshape(2,3,2,3,2).mean((2,4))  # subsample and 2x2 avg pool; out (2,3,3)
-        obs['v_tgt_field'] = np.vstack([pooled_vtgt[0].mean(0), pooled_vtgt[1].mean(1)])  # pool dx over the y coord; pool dy over x; out (2,3)
+#        obs['v_tgt_field'] = np.vstack([pooled_vtgt[0].mean(0), pooled_vtgt[1].mean(1)])  # pool dx over the y coord; pool dy over x; out (2,3)
+        y_vtgt_argmin = np.abs(pooled_vtgt[1].mean(1)).argmin()  # pool dy over x coord and return one hot indicator of the argmin; out (3,)
+        y_vtgt_onehot = np.zeros(pooled_vtgt[1].shape[0])
+        y_vtgt_onehot[y_vtgt_argmin] = 1
+        obs['v_tgt_field'] = y_vtgt_onehot
+        return obs
+
         return obs
 
     def step(self, action):
@@ -232,18 +240,22 @@ class RewardAugEnv(gym.Wrapper):
 
         rewards = {}
 
-        dx_tgt, dy_tgt = o['v_tgt_field']
+        dy_tgt = o['v_tgt_field']
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
-#        yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
+        yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
+        yaw_tgt = np.array([0.78, 0, -0.78]) @ dy_tgt   # yaw is (-) in the clockwise direction
 #        lf, ll, lu = o['l_leg']['ground_reaction_forces']
 #        rf, rl, ru = o['r_leg']['ground_reaction_forces']
+
+        # panalize turning away from the v_tgt_field sink -- reward instead?
+        rewards['yaw_tgt'] = - np.tanh(yaw - yaw_tgt)**2
 
         # gyroscope -- penalize pitch and roll
         rewards['pitch'] = - 1 * np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
         rewards['roll']  = - 1 * np.clip(roll * droll, a_min=0, a_max=None)
 #        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
-        rewards['dx'] = 3 * np.tanh(0.5*dx)
+        rewards['dx'] = 3 * np.tanh(dx)
         rewards['dy'] = - np.tanh(2*dy)**2
         rewards['dz'] = - np.tanh(dz)**2
 
@@ -254,7 +266,7 @@ class RewardAugEnv(gym.Wrapper):
 #        rewards['grf_upward']  = - 10 * np.clip(lu*ru, 0, 0.1) - (lu==ru) #np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
 
         # vtgt field rewards -- target yaw
-        rewards['dx_target'] = 1 - np.tanh(dx - dx_tgt.mean())**2
+#        rewards['dx_target'] = 1 - np.tanh(dx - dx_tgt.mean())**2
 #        rewards['dyaw_target'] = 1 - np.tanh(1.5*(dy_tgt.mean() - dyaw))**2
 
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
@@ -265,6 +277,7 @@ class RewardAugEnv(gym.Wrapper):
 #        print(o['v_tgt_field'])
 #        print('dx_tgt: ', dx_tgt, '; dx_tgt_mean: {:.3f}; dx: {:.3f}'.format(dx_tgt.mean(), dx))
 #        print('dy_tgt: ', dy_tgt, '; dy_tgt_mean: {:.3f}; dyaw: {:.3f}'.format(dy_tgt.mean(), dyaw))
+#        print('yaw: {:.3f}; yaw_tgt: {:.2f}; yaw reward: {:.3f}'.format(yaw, yaw_tgt, - np.tanh(yaw - yaw_tgt)**2))
 #        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
         r += sum(rewards.values())
         return o, r, d, i

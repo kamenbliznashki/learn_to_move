@@ -19,7 +19,7 @@ class DisagreementExploration:
         idxs = np.array([*list(range(9)),                        # pelvis       (9 obs)
                          *list(range(12,16)),                    # joints r leg (4 obs)
                          *list(range(20+3*11+3,20+3*11+3+4))])   # joints l leg (4 obs)
-        idxs += 2*3  # offset for v_tgt_field -- NOTE NOTE NOTE -- this should match the obs2vec offset (if excluding vtgt) and the poolvtgtenv given the pooling size
+        idxs += 1*3  # offset for v_tgt_field -- NOTE NOTE NOTE -- this should match the obs2vec offset (if excluding vtgt) and the poolvtgtenv given the pooling size
 #        idxs = list(range(observation_shape[0]))  # state predictors model the full state space vec
 
         # build graph
@@ -73,5 +73,5 @@ def defaults(class_name=None):
         return {'n_state_predictors': 5,
                 'state_predictor_hidden_sizes': (64, 64),
                 'lr': 1e-3,
-                'bonus_scale': 100}
+                'bonus_scale': 10}
 
