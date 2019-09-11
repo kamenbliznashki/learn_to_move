@@ -155,6 +155,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
 
     # setup tracking
     stats = {}
+    stats['avg_episode_length'] = 0
     episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_bonus   = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
@@ -162,7 +163,6 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     episode_bonus_history   = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
     n_episodes = 0
-    ep_lengths_mean = 0
     start_step = 1
 
     # set up agent
@@ -229,8 +229,8 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
         # save
         if t % args.save_interval == 0 and args.rank == 0:
             saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
-            if best_ep_length <= ep_lengths_mean:
-                best_ep_length = ep_lengths_mean
+            if best_ep_length < stats['avg_episode_length']:
+                best_ep_length = stats['avg_episode_length']
                 best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
 
         # log stats
