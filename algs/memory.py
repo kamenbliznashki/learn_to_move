@@ -45,20 +45,41 @@ class Memory:
         idxs = np.random.randint(0, self.size, batch_size)
         return Transition(*np.atleast_2d(self.obs[idxs], self.actions[idxs], self.rewards[idxs], self.dones[idxs], self.next_obs[idxs]))
 
-    def initialize(self, env, n_prefill_steps=1000, training=True):
+    def initialize(self, env, n_prefill_steps=1000, training=True, policy=None):
         if not training:
             return
-        # prefill memory using uniform exploration
+
+        # prefill memory using uniform exploration or policy provided
         if self.current_obs is None:
             self.current_obs = env.reset()
 
         for _ in range(n_prefill_steps):
-            actions = np.random.uniform(-1, 1, (env.num_envs,) + self.action_shape)
+            actions = np.random.uniform(-1, 1, (env.num_envs,) + self.action_shape) if policy is None else policy.get_actions(self.current_obs)
             next_obs, r, done, _ = env.step(actions)
             self.store_transition(self.current_obs, actions, r, done, next_obs, training)
             self.current_obs = next_obs
 
         print('Memory initialized.')
+
+
+
+class EnsembleMemory:
+    def __init__(self, n_heads, max_size, observation_shape, action_shape, dtype='float32'):
+        self.heads = [Memory(max_size, observation_shape, action_shape, dtype) for _ in range(n_heads)]
+
+    def __getitem__(self, k):
+        return self.heads[k]
+
+    def store_transition(self, obs, actions, rewards, dones, next_obs, training=True):
+        for head in self.heads:
+            m = np.random.randint(2)  # double or nothing bootstrap
+            if m == 1:
+                head.store_transition(obs, actions, rewards, dones, next_obs, training)
+
+    def initialize(self, env, n_prefill_steps, training=True, policy=None):
+        for i, head in enumerate(self.heads):  # call store_transition in each Memory class (ie no bootstrap)
+            head.initialize(env, n_prefill_steps, training, policy[i] if policy is not None else None)
+
 
 class SymmetricMemory(Memory):
 

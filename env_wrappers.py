@@ -65,19 +65,50 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
         obs_as_dict = kwargs.pop('obs_as_dict', True)
         return super().reset(obs_as_dict=obs_as_dict, **kwargs)
 
+class L2M2019ClientWrapper:
+    # L2M variables
+    LENGTH0 = 1 # leg length
+
+    # gym env variables -- conform to gym env, so can be wrapped later
+    metadata = {'render.modes': []}
+    reward_range = (-float('inf'), float('inf'))
+    spec = None
+
+    obs_dim = 339
+    act_dim = 22
+    observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
+    action_space = gym.spaces.Box(np.zeros(act_dim), np.ones(act_dim))
+
+    def __init__(self, client=None):
+        self.client = client
+
+    def step(self, action):
+        return self.client.env_step(action.tolist())
+
+    def reset(self):
+        return self.client.env_reset()
+
+    def create(self):
+        return self.client.env_create()
+
+    def submit(self):
+        return self.client.submit()
+
 class Obs2VecEnv(gym.Wrapper):
-    def __init__(self, env=None, **kwargs):
-        super().__init__(env)
-        obs_dim = env.observation_space.shape[0] - 2*11*11   # NOTE NOTE NOTE
-        self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
+#    def __init__(self, env=None, **kwargs):
+#        super().__init__(env)
+#        # NOTE NOTE NOTE -- if removing the vtgt from the obs vector below; need to update the dims here;
+#        #                    the previous env wrapper PoolVtgtEnv adjusted for the pooling operation
+#        #                    NOTE this should match what the state predictors exploration models take in as offset to indices selected
+#        obs_dim = env.observation_space.shape[0] - 2*3 #2*11*11
+#        self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
 
     def obs2vec(self, obs_dict):
         # Augmented environment from the L2R challenge
         res = []
 
-        # NOTE NOTE NOTE --- removed for now
         # target velocity field (in body frame)
-#        res += obs_dict['v_tgt_field'].flatten().tolist()
+        res += obs_dict['v_tgt_field'].flatten().tolist()  # NOTE NOTE NOTE -- this should match what the state predictors exploration models take in as offset to indices selected
 
         res.append(obs_dict['pelvis']['height'])
         res.append(obs_dict['pelvis']['pitch'])
@@ -111,7 +142,12 @@ class Obs2VecEnv(gym.Wrapper):
 
     def reset(self, **kwargs):
         o = self.env.reset(**kwargs)
+        if not o:  # submission client returns False at the end
+            return o
         return self.obs2vec(o)
+
+    def create(self):
+        return self.obs2vec(self.env.create())
 
 class RandomPoseInitEnv(gym.Wrapper):
     def reset(self, **kwargs):
@@ -124,7 +160,9 @@ class RandomPoseInitEnv(gym.Wrapper):
         leg1 = [0, np.random.uniform(-0.4, 0), np.random.uniform(-1.75, -1.25), np.random.uniform(-0.5, -0.9)]  # foot in the air
         leg2 = [0, np.random.uniform(-0.05, 0.25), np.random.uniform(-0.25, -0.015), -0.25]
 
-        pose = [np.random.uniform(0.5, 3.5),
+        x_vel = np.clip(np.abs(np.random.normal(0, 1.25)), a_min=None, a_max=3.5)
+        x_vel = np.where(x_vel < 0.15, np.zeros_like(x_vel), x_vel)   # ~ 10% of the time starts with 0 speed
+        pose = [x_vel,
                 y_vel,
                 0.94,
                 np.random.uniform(-0.25, 0.25)]
@@ -139,18 +177,6 @@ class RandomPoseInitEnv(gym.Wrapper):
         if seed is not None:
             np.random.set_state(state)
 
-#        pose = np.array([np.random.uniform(0,1),          # forward speed
-#                         0,#np.random.uniform(-1,1),          # righward speed
-#                         np.random.uniform(0.94, 0.96),    # pelvis_height
-#                         0,#np.random.uniform(-0.25, 0.25),   # trunk lean
-#                         0*np.pi/180,                      # [right] hip adduct
-#                         np.random.uniform(-1,1),          # hip flex
-#                         np.random.uniform(-1,0),          # knee extend
-#                         np.random.uniform(-0.935,0.935),  # ankle flex
-#                         0*np.pi/180,                      # [left] hip adduct
-#                         np.random.uniform(-1,1),          # hip flex
-#                         np.random.uniform(-1,0),          # knee extend
-#                         np.random.uniform(-0.935,0.935)]) # ankle flex
         return self.env.reset(init_pose=pose, **kwargs)
 
 class NoopResetEnv(gym.Wrapper):
@@ -181,12 +207,21 @@ class ZeroOneActionsEnv(gym.Wrapper):
 class PoolVTgtEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env, **kwargs)
-        obs_dim = env.observation_space.shape[0] - 2*11*11 + 2*3*3
+        obs_dim = env.observation_space.shape[0] - 2*11*11 + 1*3  # NOTE NOTE NOTE -- this should sync with exploration state predictor indexing into the state obs vector
         self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
 
     def pool_vtgt(self, obs):
-        pooled_vtgt = obs['v_tgt_field'].reshape(2,11,11)[:,::2,::2].reshape(2,3,2,3,2).mean((2,4))  # subsample and 2x2 avg pool
-        obs['v_tgt_field'] = pooled_vtgt
+        # pool v_tgt_field to 3x3 map then pool dy over x coord and dx over y coord; return one-hot indicator of the argmin
+        #   ie y vtgt is the 3 positions one step above current y coord, current y coord, one step below current y coord
+        vtgt = obs['v_tgt_field'].swapaxes(1,2)[:,::-1,:]  # transpose and flip over x coord to match matplotliv quiver so easier to interpret
+        pooled_vtgt = vtgt.reshape(2,11,11)[:,::2,::2].reshape(2,3,2,3,2).mean((2,4))  # subsample and 2x2 avg pool; out (2,3,3)
+#        obs['v_tgt_field'] = np.vstack([pooled_vtgt[0].mean(0), pooled_vtgt[1].mean(1)])  # pool dx over the y coord; pool dy over x; out (2,3)
+        y_vtgt_argmin = np.abs(pooled_vtgt[1].mean(1)).argmin()  # pool dy over x coord and return one hot indicator of the argmin; out (3,)
+        y_vtgt_onehot = np.zeros(pooled_vtgt[1].shape[0])
+        y_vtgt_onehot[y_vtgt_argmin] = 1
+        obs['v_tgt_field'] = y_vtgt_onehot
+        return obs
+
         return obs
 
     def step(self, action):
@@ -195,7 +230,12 @@ class PoolVTgtEnv(gym.Wrapper):
 
     def reset(self, **kwargs):
         o = self.env.reset(**kwargs)
+        if not o:  # submission client returns False at end
+            return o
         return self.pool_vtgt(o)
+
+    def create(self):
+        return self.pool_vtgt(self.env.create())
 
 class RewardAugEnv(gym.Wrapper):
     def step(self, action):
@@ -204,70 +244,45 @@ class RewardAugEnv(gym.Wrapper):
         # NOTE -- should be left right symmetric if using symmetric memory
 
         rewards = {}
-        def sigmoid(x):
-            return 1 / (1 + np.exp(-x))
 
-        # gyroscope -- penalize pitch and roll
-        eps = 0.15
-
+        dy_tgt = o['v_tgt_field']
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
-        lf, ll, lu = o['l_leg']['ground_reaction_forces']
-        rf, rl, ru = o['r_leg']['ground_reaction_forces']
+        yaw_tgt = np.array([0.78, 0, -0.78]) @ dy_tgt   # yaw is (-) in the clockwise direction
+#        lf, ll, lu = o['l_leg']['ground_reaction_forces']
+#        rf, rl, ru = o['r_leg']['ground_reaction_forces']
 
-        rewards['pitch'] = - np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting, then clamped to 0, otherwise positive penalty
-        rewards['roll']  = - np.clip(roll * droll, a_min=0, a_max=None)
-        rewards['yaw']   = - np.clip(yaw * dyaw, a_min=0, a_max=None)
+        # panalize turning away from the v_tgt_field sink -- reward instead?
+        rewards['yaw_tgt'] = - np.tanh(yaw - yaw_tgt)**2
+
+        # gyroscope -- penalize pitch and roll
+        rewards['pitch'] = - 1 * np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
+        rewards['roll']  = - 1 * np.clip(roll * droll, a_min=0, a_max=None)
+#        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
         rewards['dx'] = 3 * np.tanh(dx)
-        rewards['dy'] = 1 - np.tanh(4*dy)**2
-        rewards['dz'] = 1 - np.tanh(dz)**2
+        rewards['dy'] = - np.tanh(2*dy)**2
+        rewards['dz'] = - np.tanh(dz)**2
 
         rewards['height'] = 0 if height > 0.7 else -5
 
-#        rewards['grf_forward'] = - lf*rf
-        rewards['grf_lateral'] = 10*ll*rl
-        rewards['grf_upward']  = - 10 * np.clip(lu*ru, 0, 0.1) - (lu==ru) #np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
+##        rewards['grf_forward'] = - lf*rf
+#        rewards['grf_lateral'] = 10*ll*rl
+#        rewards['grf_upward']  = - 10 * np.clip(lu*ru, 0, 0.1) - (lu==ru) #np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
 
+        # vtgt field rewards -- target yaw
+#        rewards['dx_target'] = 1 - np.tanh(dx - dx_tgt.mean())**2
+#        rewards['dyaw_target'] = 1 - np.tanh(1.5*(dy_tgt.mean() - dyaw))**2
 
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
             r -= 100  # remove survival bonus
 
-#        pitch = abs(o['pelvis']['pitch']
-#        roll = abs(o['pelvis']['roll'])
-#        yaw = abs(self.get_state_desc()['joint_pos']['ground_pelvis'][2])
-#        rewards['pitch'] = 0.1 if pitch < eps else -pitch
-#        rewards['roll'] = 0.1 if roll < eps  else -roll
-#        rewards['yaw'] = 0.1 if yaw < 0.3 else -sigmoid(yaw)
-#        ang_vel = np.sqrt(np.sum(np.asarray(o['pelvis']['vel'][3:])**2))
-#        rewards['ang_vel'] = 0.1 if ang_vel < 3 else -sigmoid(ang_vel - 3)
-#        x_vel = o['pelvis']['vel'][0]
-#        y_vel = o['pelvis']['vel'][1]**2
-#        print('vel abs: ', np.round(np.abs(np.asarray(o['pelvis']['vel'])), 2))
-#        dx, dy, dz = o['pelvis']['vel'][:3]
-#        print('theta: {:.2f}'.format(np.pi/180*np.arctan(np.sqrt(dx**2 + dy**2)/dz)))
-#        rewards['x_vel'] = sigmoid(x_vel - 2)
-#        rewards['y_vel'] = 0.1 if y_vel < 0.1 else -sigmoid(y_vel)
-#
-##        # distance from vtgt min
-##        def distance_from_min(grid):
-##            x, y = np.nonzero(grid == np.min(grid))
-##            x = x[0] - grid.shape[0]//2
-##            y = y[0] - grid.shape[1]//2
-##            return np.sqrt(x**2 + y**2)
-##
-##        x, y = np.asarray(o['v_tgt_field'])
-##        dist = np.mean([distance_from_min(x), distance_from_min(y)])
-##        rewards['dist'] = 0.1 * dist
-#
-##        speed = np.sqrt(o['pelvis']['vel'][0]**2 + o['pelvis']['vel'][1]**2)
-##        rewards['speed'] = speed#sigmoid(speed - 5)
-#
-#        ground_rf = np.sum(np.asarray([o['l_leg']['ground_reaction_forces'], o['r_leg']['ground_reaction_forces']]))
-#        rewards['ground_rf'] = 0 if ground_rf < 1.5 else -sigmoid(ground_rf)
-
 #        print('pelvis: ', o['pelvis'])
 #        print('ground_rf:\n', o['l_leg']['ground_reaction_forces'], '\n', o['r_leg']['ground_reaction_forces'])
+#        print(o['v_tgt_field'])
+#        print('dx_tgt: ', dx_tgt, '; dx_tgt_mean: {:.3f}; dx: {:.3f}'.format(dx_tgt.mean(), dx))
+#        print('dy_tgt: ', dy_tgt, '; dy_tgt_mean: {:.3f}; dyaw: {:.3f}'.format(dy_tgt.mean(), dyaw))
+#        print('yaw: {:.3f}; yaw_tgt: {:.2f}; yaw reward: {:.3f}'.format(yaw, yaw_tgt, - np.tanh(yaw - yaw_tgt)**2))
 #        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
         r += sum(rewards.values())
         return o, r, d, i
