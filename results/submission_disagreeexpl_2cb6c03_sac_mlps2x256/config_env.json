@@ -1,0 +1,7 @@
+{
+    "model": "3D",
+    "visualize": false,
+    "integrator_accuracy": 0.001,
+    "difficulty": 2,
+    "stepsize": 0.01
+}

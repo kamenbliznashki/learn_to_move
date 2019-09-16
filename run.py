@@ -221,6 +221,8 @@ def main(args, extra_args):
                 if not obs:
                     break
 
+        env.submit()
+
     return agent
 
 

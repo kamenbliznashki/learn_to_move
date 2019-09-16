@@ -1,0 +1,18 @@
+{
+    "play": false,
+    "submission": false,
+    "env": "L2M2019",
+    "alg": "sac",
+    "explore": "DisagreementExploration",
+    "seed": 1,
+    "exp_name": "disagreeexpl_2cb6c03_sac_mlps2x256",
+    "n_env": 4,
+    "n_total_steps": 1000000,
+    "max_episode_length": 1000,
+    "load_path": null,
+    "output_dir": "results/disagreeexpl_2cb6c03_sac_mlps2x256_L2M2019_2019-09-11_11-33",
+    "save_interval": 1000,
+    "log_interval": 1000,
+    "rank": 0,
+    "world_size": 1
+}

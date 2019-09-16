@@ -1,0 +1,9 @@
+{
+    "n_state_predictors": 5,
+    "state_predictor_hidden_sizes": [
+        64,
+        64
+    ],
+    "lr": 0.001,
+    "bonus_scale": 1
+}

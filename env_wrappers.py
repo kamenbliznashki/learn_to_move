@@ -91,6 +91,9 @@ class L2M2019ClientWrapper:
     def create(self):
         return self.client.env_create()
 
+    def submit(self):
+        return self.client.submit()
+
 class Obs2VecEnv(gym.Wrapper):
 #    def __init__(self, env=None, **kwargs):
 #        super().__init__(env)
