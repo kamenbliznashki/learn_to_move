@@ -19,7 +19,8 @@ best_ep_length = float('-inf')
 
 class SAC:
     def __init__(self, observation_shape, action_shape, *,
-                    policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes, alpha, discount, tau, lr, learn_alpha=True):
+                    policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes, alpha, discount, tau, lr, n_sample_actions=1,
+                    learn_alpha=True):
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, *action_shape], name='actions')
@@ -49,8 +50,9 @@ class SAC:
         q1_loss = tf.losses.mean_squared_error(q1_at_memory_action, target_q)
         q2_loss = tf.losses.mean_squared_error(q2_at_memory_action, target_q)
         #   policy loss term
-        self.actions, log_pis = policy(self.obs_ph)
-        q_at_policy_action = tf.minimum(q1(tf.concat([self.obs_ph, self.actions], 1)), q2(tf.concat([self.obs_ph, self.actions], 1)))
+        actions, log_pis = policy(self.obs_ph)  # (n_samples, batch_size, action_dim) and (...,1)
+        actions, log_pis = tf.squeeze(actions, 0), tf.squeeze(log_pis, 0)
+        q_at_policy_action = tf.minimum(q1(tf.concat([self.obs_ph, actions], 1)), q2(tf.concat([self.obs_ph, actions], 1)))
         policy_loss = tf.reduce_mean(alpha * log_pis - q_at_policy_action)
         #   value function loss term
         v = value_function(self.obs_ph)
@@ -75,9 +77,12 @@ class SAC:
                 alpha_train_op = optimizer.minimize(alpha_loss, var_list=[beta])
             self.train_ops += [alpha_train_op]
 
-        # target value fn update
+        #   target value fn update
         self.target_update_ops = tf.group([tf.assign(target, (1 - tau) * target + tau * source) for target, source in \
                                             zip(target_value_function.trainable_vars, value_function.trainable_vars)])
+
+        # 4. get action op
+        self.actions, _ = policy(self.obs_ph, n_sample_actions)
 
     def initialize(self, sess):
         self.sess = sess
@@ -150,10 +155,12 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
         tic = time.time()
 
         # sample action -> step env -> store transition
-        actions = agent.get_actions(obs)
-        next_obs, r, done, _ = env.step(actions)
+        actions = agent.get_actions(obs)  # (n_samples, batch_size, action_dim)
+        actions = exploration.select_best_action(obs, actions) if exploration is not None else actions
         r_bonus = exploration.get_exploration_bonus(obs, actions) if exploration is not None else 0
-        memory.store_transition(obs, actions, r + r_bonus, done, next_obs)
+        next_obs, r, done, _ = env.step(actions)
+        done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
+        memory.store_transition(obs, actions, r + r_bonus, done_bool, next_obs)
         obs = next_obs
 
         # keep records
@@ -221,7 +228,8 @@ def defaults(env_name=None):
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': 1000,
                 'alpha': 0.2,
-                'learn_alpha': True}
+                'learn_alpha': True,
+                'n_sample_actions': 10}
     else:  # mujoco
         alpha = {
             'Ant-v2': 0.1,

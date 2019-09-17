@@ -31,7 +31,7 @@ class Model:
 
 
 class GaussianPolicy(Model):
-    def __call__(self, obs):
+    def __call__(self, obs, n_samples=1):
         with tf.variable_scope(self.name, reuse=tf.AUTO_REUSE):
             x = self.network(obs)
             mu, logstd = tf.split(x, num_or_size_splits=2, axis=1)
@@ -39,12 +39,12 @@ class GaussianPolicy(Model):
             dist = tfp.distributions.MultivariateNormalDiag(loc=mu, scale_diag=tf.exp(logstd))
 
             # sample action and evaluate log prob (note: change of variabes formula logdet is added to the log probs)
-            raw_actions = dist.sample()
+            raw_actions = dist.sample(n_samples)  # out (n_samples, B, action_dim)
             actions = tf.tanh(raw_actions)
-            log_probs = tf.reshape(dist.log_prob(raw_actions), [-1,1])
-            log_probs -= tf.reduce_sum(-2 * (raw_actions - np.log(2) + tf.nn.softplus(-2*raw_actions)), 1, keepdims=True)
+            log_probs = tf.expand_dims(dist.log_prob(raw_actions), -1)  # (n_samples, B, 1)
+            log_probs -= tf.reduce_sum(-2 * (raw_actions - np.log(2) + tf.nn.softplus(-2*raw_actions)), -1, keepdims=True)
 
-        return actions, log_probs
+        return actions, log_probs  # (n_samples, B, action_dim) and (n_samples, B, 1)
 
     def get_action(self, obs):
         assert obs.shape[0] == 1

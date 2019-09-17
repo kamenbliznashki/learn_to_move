@@ -150,6 +150,13 @@ class Obs2VecEnv(gym.Wrapper):
         return self.obs2vec(self.env.create())
 
 class RandomPoseInitEnv(gym.Wrapper):
+    def __init__(self, env=None, anneal_start_step=50000, anneal_end_step=100000, **kwargs):
+        super().__init__(env=env, **kwargs)
+        # anneal pose to zero-pose
+        self.anneal_start_step = anneal_start_step
+        self.anneal_end_step = anneal_end_step
+        self.t = 0
+
     def reset(self, **kwargs):
         seed = kwargs.get('seed', None)
         if seed is not None:
@@ -161,7 +168,6 @@ class RandomPoseInitEnv(gym.Wrapper):
         leg2 = [0, np.random.uniform(-0.05, 0.25), np.random.uniform(-0.25, -0.015), -0.25]
 
         x_vel = np.clip(np.abs(np.random.normal(0, 1.25)), a_min=None, a_max=3.5)
-        x_vel = np.where(x_vel < 0.15, np.zeros_like(x_vel), x_vel)   # ~ 10% of the time starts with 0 speed
         pose = [x_vel,
                 y_vel,
                 0.94,
@@ -174,8 +180,14 @@ class RandomPoseInitEnv(gym.Wrapper):
 
         pose = np.asarray(pose)
 
+        # anneal pose to zero pose
+        pose *= 1 - np.clip((self.t - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1)
+        pose[2] = 0.94
+
         if seed is not None:
             np.random.set_state(state)
+
+        self.t += 1
 
         return self.env.reset(init_pose=pose, **kwargs)
 
@@ -248,12 +260,12 @@ class RewardAugEnv(gym.Wrapper):
         dy_tgt = o['v_tgt_field']
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
-        yaw_tgt = np.array([0.78, 0, -0.78]) @ dy_tgt   # yaw is (-) in the clockwise direction
-#        lf, ll, lu = o['l_leg']['ground_reaction_forces']
-#        rf, rl, ru = o['r_leg']['ground_reaction_forces']
+        lf, ll, lu = o['l_leg']['ground_reaction_forces']
+        rf, rl, ru = o['r_leg']['ground_reaction_forces']
 
         # panalize turning away from the v_tgt_field sink -- reward instead?
-        rewards['yaw_tgt'] = - np.tanh(yaw - yaw_tgt)**2
+        yaw_tgt = np.array([0.78, 0, -0.78]) @ dy_tgt   # yaw is (-) in the clockwise direction
+        rewards['yaw_tgt'] = 1 - np.tanh(2*(yaw - yaw_tgt))**2
 
         # gyroscope -- penalize pitch and roll
         rewards['pitch'] = - 1 * np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
@@ -267,7 +279,8 @@ class RewardAugEnv(gym.Wrapper):
         rewards['height'] = 0 if height > 0.7 else -5
 
 ##        rewards['grf_forward'] = - lf*rf
-#        rewards['grf_lateral'] = 10*ll*rl
+        rewards['grf_ll'] = - np.tanh(10*ll)**2
+        rewards['grf_rl'] = - np.tanh(10*rl)**2  # rl outside [-0.1,0.1] approaches -1
 #        rewards['grf_upward']  = - 10 * np.clip(lu*ru, 0, 0.1) - (lu==ru) #np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
 
         # vtgt field rewards -- target yaw

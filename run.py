@@ -100,6 +100,8 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
         env = RewardAugEnv(env)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
+
+        args.max_episode_length = env.time_limit / env.n_skips
     else:
         import gym
         env = gym.envs.make(env_name)
@@ -176,7 +178,7 @@ def main(args, extra_args):
         episode_rewards = 0
         episode_steps = 0
         while True:
-#            i = input('press key to continue ...')
+            if episode_steps % 5 == 0: i = input('press key to continue ...')
             action = agent.get_actions(obs)
             next_obs, rew, done, _ = env.step(action.flatten())
             r_bonus = exploration.get_exploration_bonus(np.atleast_2d(obs), action).squeeze()
