@@ -89,8 +89,7 @@ class SAC:
         self.sess.run(tf.global_variables_initializer())
 
     def get_actions(self, obs):
-        actions = self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
-        return actions
+        return self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
 
     def get_action_value(self, obs, actions):
         return self.sess.run(self.q_at_memory_action, {self.obs_ph: obs, self.actions_ph: actions})
@@ -115,7 +114,6 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
 
     # setup tracking
     stats = {}
-    stats['avg_episode_length'] = 0
     episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_bonus   = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
@@ -189,8 +187,8 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
         # save
         if t % args.save_interval == 0:
             saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
-            if best_ep_length < stats['avg_episode_length']:
-                best_ep_length = stats['avg_episode_length']
+            if best_ep_length < np.mean(episode_lengths_history):
+                best_ep_length = np.mean(episode_lengths_history)
                 best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
 
         # log stats

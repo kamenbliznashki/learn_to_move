@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 import tensorflow as tf
+import tensorflow_probability as tfp
 from tabulate import tabulate
 
 from algs.memory import Memory
@@ -21,12 +22,14 @@ best_ep_length = float('-inf')
 
 class DDPG:
     def __init__(self, observation_shape, action_shape, min_action, max_action, *,
-                    policy_hidden_sizes, q_hidden_sizes, discount, tau, q_lr, policy_lr):
+                    policy_hidden_sizes, q_hidden_sizes, discount, tau, q_lr, policy_lr, expl_noise, n_sample_actions):
         self.min_action = min_action
         self.max_action = max_action
         self.tau = tau
         self.policy_lr = policy_lr
         self.q_lr = q_lr
+        self.expl_noise = expl_noise
+        self.n_sample_actions = n_sample_actions
 
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
@@ -87,10 +90,10 @@ class DDPG:
         self.sess.run(tf.global_variables_initializer())
         self.sess.run(self.target_init_ops)
 
-    def get_actions(self, obs, expl_noise=0):
+    def get_actions(self, obs):
         actions = self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
-        if expl_noise != 0:
-            actions += np.random.normal(0, expl_noise, actions.shape)
+        if self.expl_noise != 0:
+            actions = actions + np.random.normal(0, self.expl_noise, (self.n_sample_actions, *actions.shape))
             actions = np.clip(actions, self.min_action, self.max_action)
         return actions
 
@@ -124,10 +127,10 @@ class DDPGMPI(DDPG):
         self.q_optimizer.sync()
         self.sess.run(self.target_init_ops)
 
-    def get_actions(self, obs, expl_noise=0):
+    def get_actions(self, obs):
         actions = self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
-        if expl_noise != 0:
-            actions += np.random.normal(0, expl_noise, actions.shape)
+        if self.expl_noise != 0:
+            actions = actions + np.random.normal(0, self.expl_noise, (self.n_sample_actions, *actions.shape))
             actions = np.clip(actions, self.min_action, self.max_action)
         return actions
 
@@ -147,15 +150,13 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     tf.set_random_seed(int(seed + 1e6*args.rank))
 
     # unpack variables
-    expl_noise = alg_args.pop('expl_noise', 0)
-    batch_size = alg_args.pop('batch_size', 256)
-    max_memory_size = alg_args.pop('max_memory_size', int(1e6))
-    n_prefill_steps = alg_args.pop('n_prefill_steps', 1000)
+    batch_size = alg_args.pop('batch_size')
+    max_memory_size = alg_args.pop('max_memory_size')
+    n_prefill_steps = alg_args.pop('n_prefill_steps')
     global best_ep_length
 
     # setup tracking
     stats = {}
-    stats['avg_episode_length'] = 0
     episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_bonus   = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
@@ -163,6 +164,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     episode_bonus_history   = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
     n_episodes = 0
+    ep_lengths_mean = 0
     start_step = 1
 
     # set up agent
@@ -196,9 +198,10 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
         tic = time.time()
 
         # sample action -> step env -> store transition
-        actions = agent.get_actions(obs, expl_noise)
-        next_obs, r, done, _ = env.step(actions)
+        actions = agent.get_actions(obs)
+        actions = exploration.select_best_action(obs, actions) if exploration is not None else actions
         r_bonus = exploration.get_exploration_bonus(obs, actions) if exploration is not None else 0
+        next_obs, r, done, _ = env.step(actions)
         done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
         memory.store_transition(obs, actions, r + r_bonus, done_bool, next_obs)
         obs = next_obs
@@ -229,8 +232,8 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
         # save
         if t % args.save_interval == 0 and args.rank == 0:
             saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
-            if best_ep_length < stats['avg_episode_length']:
-                best_ep_length = stats['avg_episode_length']
+            if best_ep_length < ep_lengths_mean:
+                best_ep_length = ep_lengths_mean
                 best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
 
         # log stats
@@ -283,14 +286,15 @@ def defaults(env_name=None):
     if env_name == 'L2M2019':
         return {'policy_hidden_sizes': (256, 256),
                 'q_hidden_sizes': (256, 256),
-                'expl_noise': 0.,
                 'discount': 0.96,
                 'tau': 0.005,
                 'q_lr': 1e-3,
                 'policy_lr': 1e-3,
                 'batch_size': 128,
                 'max_memory_size': int(1e6),
-                'n_prefill_steps': 1000}
+                'n_prefill_steps': 1000,
+                'expl_noise': 0.2,
+                'n_sample_actions': 10}
     else:  # mujoco
         n_prefill_steps = {
             'Ant-v2': 10000,
