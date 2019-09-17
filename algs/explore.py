@@ -3,6 +3,12 @@ import tensorflow as tf
 
 from algs.models import Model
 
+try:
+    from mpi4py import MPI
+    from mpi_adam import MpiAdam, flatgrad
+    from mpi_utils import mpi_moments
+except ImportError:
+    MPI = None
 
 class DisagreementExploration:
     """ Implementation of Pathak et al. 'Self Supervised Exploration via Disagreement' """
@@ -68,12 +74,20 @@ class DisagreementExploration:
 
 class BootstrappedAgent:
     """ Implementation of Osband et al. 'Randomized Prior Functions for Deep RL' """
-    def __init__(self, agent_cls, n_heads, observation_shape, action_shape, alg_args):
+    def __init__(self, agent_cls, n_heads, args, kwargs):
         # NOTE TODO -- can adjust alg_args across heads here e.g.: expl noise, discount, learning rate -- e.g. uniform sample
-        del alg_args['discount']
+        kwargs.pop('discount', None)
+        kwargs.pop('lr', None)
 
-        self.heads = [agent_cls(i, observation_shape, action_shape, discount=np.random.uniform(0.94, 0.99), **alg_args)
-                        for i in range(n_heads)]
+        discount = np.random.uniform(0.95, 0.98, (n_heads,))
+        lr = np.random.uniform(1e-2, 1e-5, (n_heads,))
+
+        # broadcast to nodes so local copies of each head use same hyperparams
+        if MPI is not None:
+            MPI.COMM_WORLD.Bcast(discount, root=0)
+            MPI.COMM_WORLD.Bcast(lr, root=0)
+
+        self.heads = [agent_cls(i, *args, discount=discount[i], lr=lr[i], **kwargs) for i in range(n_heads)]
 
     def __getitem__(self, k):
         return self.heads[k]

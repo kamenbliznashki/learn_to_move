@@ -90,8 +90,7 @@ class SAC:
         self.sess = sess
 
     def get_actions(self, obs):
-        actions = self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
-        return actions
+        return self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
 
     def get_action_value(self, obs, actions):
         return self.sess.run(self.q_at_memory_action, {self.obs_ph: obs, self.actions_ph: actions})
@@ -118,7 +117,6 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
 
     # setup tracking
     stats = {}
-    stats['avg_episode_length'] = 0
     episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_bonus   = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
@@ -130,7 +128,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
 
     # set up agent
     memory = EnsembleMemory(n_heads, int(max_memory_size), env.observation_space.shape, env.action_space.shape)
-    agent = BootstrappedAgent(SAC, n_heads, env.observation_space.shape, env.action_space.shape, alg_args)
+    agent = BootstrappedAgent(SAC, n_heads, args=(env.observation_space.shape, env.action_space.shape), kwargs=alg_args)
 
     # initialize session, agent, saver
     sess = tf.get_default_session()
@@ -169,9 +167,10 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
 
             # sample action -> step env -> store transition
             actions = agent.get_actions(obs, actor_head_idx)
-            next_obs, r, done, _ = env.step(actions)
             r_bonus = exploration.get_exploration_bonus(obs, actions) if exploration is not None else 0
-            memory.store_transition(obs, actions, r + r_bonus, done, next_obs)
+            next_obs, r, done, _ = env.step(actions)
+            done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
+            memory.store_transition(obs, actions, r + r_bonus, done_bool, next_obs)
             obs = next_obs
 
             # keep records
@@ -195,13 +194,13 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
             # train
             agent.train(memory, batch_size)
             agent.update_target_net()
-            expl_loss = exploration.train(batch) if exploration is not None else 0
+            expl_loss = exploration.train(memory[actor_head_idx].sample()) if exploration is not None else 0
 
             # save
             if t % args.save_interval == 0:
                 saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
-                if best_ep_length < stats['avg_episode_length']:
-                    best_ep_length = stats['avg_episode_length']
+                if best_ep_length < np.mean(episode_lengths_history):
+                    best_ep_length = np.mean(episode_lengths_history)
                     best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
 
             # log stats
