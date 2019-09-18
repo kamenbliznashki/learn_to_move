@@ -155,7 +155,7 @@ class RandomPoseInitEnv(gym.Wrapper):
         # anneal pose to zero-pose
         self.anneal_start_step = anneal_start_step
         self.anneal_end_step = anneal_end_step
-        self.t = 0
+        self.anneal_step = 0
 
     def reset(self, **kwargs):
         seed = kwargs.get('seed', None)
@@ -181,13 +181,13 @@ class RandomPoseInitEnv(gym.Wrapper):
         pose = np.asarray(pose)
 
         # anneal pose to zero pose
-        pose *= 1 - np.clip((self.t - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1)
+        pose *= 1 - np.clip((self.anneal_step - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1)
         pose[2] = 0.94
 
         if seed is not None:
             np.random.set_state(state)
 
-        self.t += 1
+        self.anneal_step += 1
 
         return self.env.reset(init_pose=pose, **kwargs)
 
