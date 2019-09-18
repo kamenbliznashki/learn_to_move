@@ -54,7 +54,7 @@ class Memory:
             self.current_obs = env.reset()
 
         for _ in range(n_prefill_steps):
-            actions = np.random.uniform(-1, 1, (env.num_envs,) + self.action_shape) if policy is None else policy.get_actions(self.current_obs)
+            actions = np.random.uniform(-1, 1, (env.num_envs,) + self.action_shape) if policy is None else policy.get_actions(self.current_obs)[0]
             next_obs, r, done, _ = env.step(actions)
             self.store_transition(self.current_obs, actions, r, done, next_obs, training)
             self.current_obs = next_obs
