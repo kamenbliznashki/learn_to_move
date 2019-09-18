@@ -179,9 +179,10 @@ def main(args, extra_args):
         episode_steps = 0
         while True:
             if episode_steps % 5 == 0: i = input('press key to continue ...')
-            action = agent.get_actions(obs)
-            next_obs, rew, done, _ = env.step(action.flatten())
+            action = agent.get_actions(obs)  # (n_samples, batch_size, action_dim)
+            action = exploration.select_best_action(np.atleast_2d(obs), action)
             r_bonus = exploration.get_exploration_bonus(np.atleast_2d(obs), action).squeeze()
+            next_obs, rew, done, _ = env.step(action.flatten())
             episode_rewards += rew
             episode_steps += 1
             print('q value: {:.4f}; reward: {:.2f}; bonus: {:.2f}; reward so far: {:.2f}'.format(
@@ -216,6 +217,7 @@ def main(args, extra_args):
 
         while True:
             action = agent.get_actions(obs)
+            action = exploration.select_best_action(np.atleast_2d(obs), action)
             next_obs, rew, done, _ = env.step(action.flatten())
             obs = next_obs
             if done:

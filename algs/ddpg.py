@@ -188,6 +188,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     if args.load_path is not None:
         saver.restore(sess, args.load_path)
         start_step = sess.run(tf.train.get_global_step()) + 1
+        env.t = start_step  # annealing of init pose env
         print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
 
     # init memory and env
