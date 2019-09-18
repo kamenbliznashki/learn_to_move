@@ -20,6 +20,8 @@ best_ep_length = float('-inf')
 class SAC:
     def __init__(self, head_idx, observation_shape, action_shape, *,
                     policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes, alpha, discount, tau, lr, learn_alpha=True):
+        print('Head initialized with: discount {:.4f}, lr {:.4f}, tau {:.4f}'.format(discount, lr, tau))
+
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, *action_shape], name='actions')
@@ -146,6 +148,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     if args.load_path is not None:
         saver.restore(sess, args.load_path)
         t = sess.run(tf.train.get_global_step())
+        env.t = t  # restore to resume annealing init pose to zero pose
         print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
 
     # init memory
@@ -239,7 +242,7 @@ def defaults(env_name=None):
                 'n_prefill_steps': 1000,
                 'alpha': 0.2,
                 'learn_alpha': True,
-                'n_heads': 1}
+                'n_heads': 5}
     else:  # mujoco
         alpha = {
             'Ant-v2': 0.1,
