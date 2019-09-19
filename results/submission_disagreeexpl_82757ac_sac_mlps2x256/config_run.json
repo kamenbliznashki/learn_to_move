@@ -1,0 +1,18 @@
+{
+    "play": true,
+    "submission": false,
+    "env": "L2M2019",
+    "alg": "sac",
+    "explore": "DisagreementExploration",
+    "seed": 1,
+    "exp_name": "exp",
+    "n_env": 1,
+    "n_total_steps": 0,
+    "max_episode_length": 250.0,
+    "load_path": "results/disagreeexpl_82757ac_sac_mlps2x256_L2M2019_2019-09-17_02-02/agent.ckpt-170000",
+    "output_dir": "results/disagreeexpl_82757ac_sac_mlps2x256_L2M2019_2019-09-17_02-02",
+    "save_interval": 1000,
+    "log_interval": 1000,
+    "rank": 0,
+    "world_size": 1
+}
