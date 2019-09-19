@@ -80,7 +80,7 @@ class BootstrappedAgent:
         kwargs.pop('lr', None)
 
         discount = np.random.uniform(0.95, 0.98, (n_heads,))
-        lr = np.random.uniform(1e-2, 1e-5, (n_heads,))
+        lr = np.random.uniform(1e-5, 5e-3, (n_heads,))
 
         # broadcast to nodes so local copies of each head use same hyperparams
         if MPI is not None:
