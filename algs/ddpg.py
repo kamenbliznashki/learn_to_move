@@ -183,7 +183,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
         saver = tf.train.Saver(restore_dict)
     else:
         saver = tf.train.Saver()
-        best_saver = tf.train.Saver(max_to_keep=1)
+        best_saver = tf.train.Saver(max_to_keep=2)
     sess.graph.finalize()
     if args.load_path is not None:
         saver.restore(sess, args.load_path)

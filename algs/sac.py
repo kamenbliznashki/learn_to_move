@@ -138,7 +138,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
         saver = tf.train.Saver(restore_dict)
     else:
         saver = tf.train.Saver()  # keep track of all vars for training; only use non-optim vars for eval
-        best_saver = tf.train.Saver(max_to_keep=1)
+        best_saver = tf.train.Saver(max_to_keep=2)
     sess.graph.finalize()
     if args.load_path is not None:
         saver.restore(sess, args.load_path)
@@ -217,9 +217,9 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
 
 def defaults(env_name=None):
     if env_name == 'L2M2019':
-        return {'policy_hidden_sizes': (128, 128),
-                'value_hidden_sizes': (128, 128),
-                'q_hidden_sizes': (128, 128),
+        return {'policy_hidden_sizes': (256, 256),
+                'value_hidden_sizes': (256, 256),
+                'q_hidden_sizes': (256, 256),
                 'discount': 0.96,
                 'tau': 0.01,
                 'lr': 1e-3,

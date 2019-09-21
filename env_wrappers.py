@@ -150,12 +150,13 @@ class Obs2VecEnv(gym.Wrapper):
         return self.obs2vec(self.env.create())
 
 class RandomPoseInitEnv(gym.Wrapper):
-    def __init__(self, env=None, anneal_start_step=50000, anneal_end_step=100000, **kwargs):
+    def __init__(self, env=None, anneal_start_step=50000, anneal_end_step=100000, anneal_end_value=0.1, **kwargs):
         super().__init__(env=env, **kwargs)
         # anneal pose to zero-pose
         self.anneal_start_step = anneal_start_step
         self.anneal_end_step = anneal_end_step
         self.anneal_step = 0
+        self.anneal_end_value = anneal_end_value  # % of time starting with a random init pose
 
     def reset(self, **kwargs):
         seed = kwargs.get('seed', None)
@@ -163,6 +164,7 @@ class RandomPoseInitEnv(gym.Wrapper):
             state = np.random.get_state()
             np.random.seed(seed)
 
+        # construct random pose
         y_vel = np.random.uniform(-0.25, 0.25)
         leg1 = [0, np.random.uniform(-0.4, 0), np.random.uniform(-1.75, -1.25), np.random.uniform(-0.5, -0.9)]  # foot in the air
         leg2 = [0, np.random.uniform(-0.05, 0.25), np.random.uniform(-0.25, -0.015), -0.25]
@@ -180,14 +182,19 @@ class RandomPoseInitEnv(gym.Wrapper):
 
         pose = np.asarray(pose)
 
-        # anneal pose to zero pose
-        pose *= 1 - np.clip((self.anneal_step - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1)
-        pose[2] = 0.94
+        # compute annealed prob of starting with random init pose -- below returns eg (1, 0.9, ..., 0.2, 0.1, 0.1, ...)
+        rand_pose_prob = max(self.anneal_end_value, 1 - np.clip((self.anneal_step - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1))
+
+        # select random init pose with prob rand_pose_prob and zero pose otherwise
+        if np.random.rand() > rand_pose_prob:
+            # construct zero pose
+            pose *= 0
+            pose[2] = 0.94
+
+        self.anneal_step += 1
 
         if seed is not None:
             np.random.set_state(state)
-
-        self.anneal_step += 1
 
         return self.env.reset(init_pose=pose, **kwargs)
 
@@ -265,15 +272,15 @@ class RewardAugEnv(gym.Wrapper):
 
         # panalize turning away from the v_tgt_field sink -- reward instead?
         yaw_tgt = np.array([0.78, 0, -0.78]) @ dy_tgt   # yaw is (-) in the clockwise direction
-        rewards['yaw_tgt'] = 1 - np.tanh(2*(yaw - yaw_tgt))**2
+        rewards['yaw_tgt'] = 2 * (1 - np.tanh(2*(yaw - yaw_tgt))**2)
 
         # gyroscope -- penalize pitch and roll
         rewards['pitch'] = - 1 * np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
         rewards['roll']  = - 1 * np.clip(roll * droll, a_min=0, a_max=None)
 #        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
-        rewards['dx'] = 3 * np.tanh(dx)
-        rewards['dy'] = - np.tanh(2*dy)**2
+        rewards['dx'] = 3 * np.clip(abs(dy)/abs(dx), 1, None) * np.tanh(dx)
+        rewards['dy'] = - 2 * np.tanh(2*dy)**2
         rewards['dz'] = - np.tanh(dz)**2
 
         rewards['height'] = 0 if height > 0.7 else -5

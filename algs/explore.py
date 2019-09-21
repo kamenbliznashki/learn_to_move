@@ -20,6 +20,7 @@ class DisagreementExploration:
                          *list(range(12,16)),                    # joints r leg (4 obs)
                          *list(range(20+3*11+3,20+3*11+3+4))])   # joints l leg (4 obs)
         idxs += 1*3  # offset for v_tgt_field -- NOTE NOTE NOTE -- this should match the obs2vec offset (if excluding vtgt) and the poolvtgtenv given the pooling size
+        idxs = np.hstack([list(range(3)), idxs])
 #        idxs = list(range(observation_shape[0]))  # state predictors model the full state space vec
 
         # build graph
@@ -69,7 +70,7 @@ class DisagreementExploration:
         pred_next_obs = self.sess.run(self.pred_next_obs, {self.obs_ph: obs, self.actions_ph: actions})  # (n_samples*batch_size, obs_dim)
 
         # compute rewards
-        height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = np.split(pred_next_obs[:,:,:9], 9, -1)  # pelvis obs are 0:9
+        height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = np.split(pred_next_obs[:,:,3:3+9], 9, -1)  # pelvis obs are 0:9
         rewards = {}
         rewards['pitch'] = - 1 * np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
         rewards['roll']  = - 1 * np.clip(roll * droll, a_min=0, a_max=None)
