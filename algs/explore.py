@@ -69,13 +69,13 @@ class DisagreementExploration:
         actions = actions.reshape(-1, action_dim)
         pred_next_obs = self.sess.run(self.pred_next_obs, {self.obs_ph: obs, self.actions_ph: actions})  # (n_samples*batch_size, obs_dim)
 
-        # compute rewards
-        height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = np.split(pred_next_obs[:,:,3:3+9], 9, -1)  # pelvis obs are 0:9
+        # compute rewards -- NOTE -- match this to the idx selection that is input to the state predictors
+        height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = np.split(pred_next_obs[:,:,3:3+9], 9, -1)
         rewards = {}
         rewards['pitch'] = - 1 * np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
         rewards['roll']  = - 1 * np.clip(roll * droll, a_min=0, a_max=None)
-        rewards['dx'] = 3 * np.tanh(dx)
-        rewards['dy'] = - np.tanh(2*dy)**2
+        rewards['dx'] = 3 * np.clip(abs(dy)/abs(dx), 1, None) * np.tanh(dx)
+        rewards['dy'] = - 2 * np.tanh(2*dy)**2
         rewards['dz'] = - np.tanh(dz)**2
         rewards['height'] = np.where(height > 0.7, np.zeros_like(height), -5 * np.ones_like(height))
         rewards = np.sum([v for v in rewards.values()], 0)  # (n_samples*batch_size, n_state_predictors, 1)
