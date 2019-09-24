@@ -7,6 +7,7 @@ import time
 import csv
 
 import numpy as np
+import tensorflow as tf
 
 import gym
 from collections import deque
@@ -257,52 +258,62 @@ class PoolVTgtEnv(gym.Wrapper):
         return self.pool_vtgt(self.env.create())
 
 class RewardAugEnv(gym.Wrapper):
-    def step(self, action):
-        o, r, d, i = self.env.step(action)
-
+    @staticmethod
+    def compute_rewards(height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
         # NOTE -- should be left right symmetric if using symmetric memory
+
+        # switch functions if inputs are tensors
+        clip = tf.clip_by_value if isinstance(height, tf.Tensor) else np.clip
+        tanh = tf.math.tanh if isinstance(height, tf.Tensor) else np.tanh
+        where = tf.where if isinstance(height, tf.Tensor) else np.where
+        ones_like = tf.ones_like if isinstance(height, tf.Tensor) else np.ones_like
+        abs = tf.math.abs if isinstance(height, tf.Tensor) else abs
 
         rewards = {}
 
+        # gyroscope -- penalize pitch and roll
+        rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
+        rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
+#        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
+
+        rewards['dx'] = 3 * clip(abs(dy)/abs(dx), 1, float('inf')) * tanh(dx)
+        rewards['dy'] = - 2 * tanh(2*dy)**2
+        rewards['dz'] = - tanh(dz)**2
+
+        if isinstance(height, float):
+            rewards['height'] = 0 if height > 0.7 else -5
+        else:
+            rewards['height'] = where(height > 0.7, 0 * ones_like(height), -5 * ones_like(height))
+
+        if rl is not None:
+            rewards['grf_rl'] = - tanh(10*rl)**2  # rl outside [-0.1,0.1] approaches -1
+            rewards['grf_ll'] = - tanh(10*ll)**2
+
+#        print('pelvis: ', o['pelvis'])
+#        print('ground_rf:\n', o['l_leg']['ground_reaction_forces'], '\n', o['r_leg']['ground_reaction_forces'])
+#        print(o['v_tgt_field'])
+#        print('yaw: {:.3f}; yaw_tgt: {:.2f}; yaw reward: {:.3f}'.format(yaw, yaw_tgt, - np.tanh(yaw - yaw_tgt)**2))
+        return rewards
+
+    def step(self, action):
+        o, r, d, i = self.env.step(action)
+
+        # extract data
         dy_tgt = o['v_tgt_field']
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
-        lf, ll, lu = o['l_leg']['ground_reaction_forces']
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
+        lf, ll, lu = o['l_leg']['ground_reaction_forces']
+
+        rewards = self.compute_rewards(height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
 
         # panalize turning away from the v_tgt_field sink -- reward instead?
         yaw_tgt = np.array([0.78, 0, -0.78]) @ dy_tgt   # yaw is (-) in the clockwise direction
         rewards['yaw_tgt'] = 2 * (1 - np.tanh(2*(yaw - yaw_tgt))**2)
 
-        # gyroscope -- penalize pitch and roll
-        rewards['pitch'] = - 1 * np.clip(pitch * dpitch, a_min=0, a_max=None) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
-        rewards['roll']  = - 1 * np.clip(roll * droll, a_min=0, a_max=None)
-#        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
-
-        rewards['dx'] = 3 * np.clip(abs(dy)/abs(dx), 1, None) * np.tanh(dx)
-        rewards['dy'] = - 2 * np.tanh(2*dy)**2
-        rewards['dz'] = - np.tanh(dz)**2
-
-        rewards['height'] = 0 if height > 0.7 else -5
-
-##        rewards['grf_forward'] = - lf*rf
-        rewards['grf_ll'] = - np.tanh(10*ll)**2
-        rewards['grf_rl'] = - np.tanh(10*rl)**2  # rl outside [-0.1,0.1] approaches -1
-#        rewards['grf_upward']  = - 10 * np.clip(lu*ru, 0, 0.1) - (lu==ru) #np.where(5*lu*ru > 0.5, 0.5, 5*lu*ru)
-
-        # vtgt field rewards -- target yaw
-#        rewards['dx_target'] = 1 - np.tanh(dx - dx_tgt.mean())**2
-#        rewards['dyaw_target'] = 1 - np.tanh(1.5*(dy_tgt.mean() - dyaw))**2
-
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
-            r -= 100  # remove survival bonus
+            r = 0  # remove survival bonus ie no additional change at max episode length
 
-#        print('pelvis: ', o['pelvis'])
-#        print('ground_rf:\n', o['l_leg']['ground_reaction_forces'], '\n', o['r_leg']['ground_reaction_forces'])
-#        print(o['v_tgt_field'])
-#        print('dx_tgt: ', dx_tgt, '; dx_tgt_mean: {:.3f}; dx: {:.3f}'.format(dx_tgt.mean(), dx))
-#        print('dy_tgt: ', dy_tgt, '; dy_tgt_mean: {:.3f}; dyaw: {:.3f}'.format(dy_tgt.mean(), dyaw))
-#        print('yaw: {:.3f}; yaw_tgt: {:.2f}; yaw reward: {:.3f}'.format(yaw, yaw_tgt, - np.tanh(yaw - yaw_tgt)**2))
 #        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
         r += sum(rewards.values())
         return o, r, d, i

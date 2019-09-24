@@ -24,7 +24,7 @@ parser.add_argument('--submission', action='store_true')
 
 parser.add_argument('env', type=str, help='Environment id (e.g. HalfCheetah-v2 or L2M2019).')
 parser.add_argument('alg', type=str, help='Algorithm name -- module where agent and learn function reside.')
-parser.add_argument('--explore', default='DisagreementExploration', type=str, help='Exploration class name within explore module.')
+parser.add_argument('--explore', default='SPEnsemble', type=str, help='Exploration class name within explore module.')
 parser.add_argument('--seed', default=1, type=int)
 parser.add_argument('--exp_name', default='exp', type=str)
 # training params
@@ -153,11 +153,11 @@ def main(args, extra_args):
     # build environment
     env = build_env(args, env_args)
 
-    # build exploration module and defaults
-    exploration = None
+    # build state predictor module and defaults
+    spmodel = None
     if args.explore:
-        exploration = getattr(import_module('algs.explore'), args.explore)
-        exploration = exploration(env.observation_space.shape, env.action_space.shape, **expl_args)
+        spmodel = getattr(import_module('algs.explore'), args.explore)
+        spmodel = spmodel(env.action_space.shape, env.action_space.low[0], env.action_space.high[0], **expl_args)
 
     # init session
     tf_config = tf.ConfigProto(allow_soft_placement=True, inter_op_parallelism_threads=1, intra_op_parallelism_threads=1)
@@ -169,7 +169,7 @@ def main(args, extra_args):
 
     # build and train agent
     learn = getattr(import_module('algs.' + args.alg), 'learn')
-    agent = learn(env, exploration, args.seed, args.n_total_steps, args.max_episode_length, alg_args, args)
+    agent = learn(env, spmodel, args.seed, args.n_total_steps, args.max_episode_length, alg_args, args)
 
     if args.play:
         env_args['visualize'] = True
@@ -180,8 +180,8 @@ def main(args, extra_args):
         while True:
 #            if episode_steps % 5 == 0: i = input('press key to continue ...')
             action = agent.get_actions(obs)  # (n_samples, batch_size, action_dim)
-            action = exploration.select_best_action(np.atleast_2d(obs), action)
-            r_bonus = exploration.get_exploration_bonus(np.atleast_2d(obs), action).squeeze()
+            action = spmodel.get_best_action(np.atleast_2d(obs), action)
+            r_bonus = spmodel.get_exploration_bonus(np.atleast_2d(obs), action).squeeze()
             next_obs, rew, done, _ = env.step(action.flatten())
             episode_rewards += rew
             episode_steps += 1
@@ -217,7 +217,7 @@ def main(args, extra_args):
 
         while True:
             action = agent.get_actions(obs)
-            action = exploration.select_best_action(np.atleast_2d(obs), action)
+            action = spmodel.get_best_action(np.atleast_2d(obs), action)
             next_obs, rew, done, _ = env.step(action.flatten())
             obs = next_obs
             if done:
