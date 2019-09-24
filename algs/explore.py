@@ -48,16 +48,17 @@ class SPEnsemble:
                                     for i in range(self.n_state_predictors)]
 
         # setup dynamics function
-        self.pred_normed_next_obs, pred_next_obs = self.dynamics_fn(self.obs_ph, self.actions_ph)
+        self.pred_normed_next_obs, self.pred_next_obs = self.dynamics_fn(self.obs_ph, self.actions_ph)
 
         # setup loss
-        self.losses = [tf.losses.mean_squared_error(pred, self.next_obs_ph) for pred in pred_next_obs]
+        self.losses = [tf.losses.mean_squared_error(pred, self.next_obs_ph) for pred in self.pred_next_obs]
 
         # setup training
         optimizer = tf.train.AdamOptimizer(self.lr, name='sp_optimizer')
         self.train_ops = [optimizer.minimize(loss, var_list=model.trainable_vars) for loss, model in zip(self.losses, self.state_predictors)]
 
         # setup action selection
+        self.actions = self.policy(self.obs_ph)  # include only to visualize model based rollouts
         self.best_actions = self.setup_action_selection(self.obs_ph, self.actions_ph)
 
     def dynamics_fn(self, obs, actions):
@@ -167,27 +168,16 @@ class SPEnsemble:
         best_actions = self.sess.run(self.best_actions, {self.obs_ph: obs, self.actions_ph: actions})
         return np.atleast_2d(best_actions)
 
-#    def get_best_action(self, obs, actions):
-#        # input is obs = (batch_size, obs_dim); actions = (n_samples, batch_size, action_dim)
-#        N, B, action_dim = actions.shape
-#
-#        # reshape inputs to (N*B, *_dim)
-#        obs = np.take_along_axis(obs, IDXS, 1)
-#        obs = np.tile(obs, (N, 1, 1)).reshape(-1, obs.shape[-1])
-#        actions = actions.reshape(-1, action_dim)
-#        pred_next_obs = np.stack([model.get_pred_next_state(obs, actions) for model in self.state_predictors], 1)  # (N*B, n_state_predictors, obs_dim)
-#
-#        # compute rewards -- NOTE -- match this to the idx selection that is input to the state predictors
-#        height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = np.split(pred_next_obs[:,:,3:3+9], 9, -1)
-#        rewards = compute_rewards(height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, 0, 0, 0, 0, 0, 0)
-#        rewards = np.sum([v for v in rewards.values()], 0)  # (N*B, n_state_predictors, 1)
-#        rewards = np.reshape(rewards, [N, B, -1, 1])  # (N, B, n_state_predictors, 1)
-#        rewards = np.sum(rewards, 2)  # sum over state predictors; out (n_samples, B, 1)
-#
-#        actions = actions.reshape([N, B, action_dim])
-#        best_actions = np.take_along_axis(actions, rewards.argmax(0)[None,...], 0)  # out (1, B, action_dim)
-#        return np.squeeze(best_actions, 0)
+    def get_pred_next_obs(self, obs, actions):
+        obs = np.take(obs, IDXS, 1)
+        actions = actions[None,...]
+        _, pred_next_obs = self.sess.run(self.pred_next_obs, {self.obs_ph: obs, self.actions_ph: actions})
+        return pred_next_obs
 
+    def get_student_policy_action(self, obs):
+        obs = np.atleast_2d(obs)
+        obs = np.take(obs, IDXS, 1)
+        return self.sess.run(self.actions, {self.obs_ph, obs})
 
 # --------------------
 # defaults

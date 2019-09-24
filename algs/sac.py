@@ -146,7 +146,7 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
     if spmodel is not None:
         spmodel.initialize(sess, agent.student_policy)
     # backward compatible to models that used mpi_adam -- ie only save and restore non-optimizer vars
-    if n_total_steps == 0:
+    if n_total_steps == 0 and args.load_path is not None:
         vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
         restore_dict = {var.op.name: var for var in tf.global_variables() if var.op.name in vars_to_restore}
         saver = tf.train.Saver(restore_dict)

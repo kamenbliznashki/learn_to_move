@@ -177,7 +177,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     agent.initialize(sess)
     if exploration is not None: exploration.initialize(sess)
     # compatibility with models trained with mpi_adam - keep track of all vars for training; only use non-optim vars for eval
-    if n_total_steps == 0:
+    if n_total_steps == 0 and args.load_path is not None:
         vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
         restore_dict = {var.op.name: var for var in tf.global_variables() if var.op.name in vars_to_restore}
         saver = tf.train.Saver(restore_dict)

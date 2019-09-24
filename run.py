@@ -172,7 +172,7 @@ def main(args, extra_args):
     agent = learn(env, spmodel, args.seed, args.n_total_steps, args.max_episode_length, alg_args, args)
 
     if args.play:
-        env_args['visualize'] = True
+        if env_args: env_args['visualize'] = True
         env = make_single_env(args.env, args.rank, args.n_env + 100, args.seed, env_args, args.output_dir)
         obs = env.reset()
         episode_rewards = 0
