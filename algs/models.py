@@ -44,10 +44,7 @@ class GaussianPolicy(Model):
             log_probs = tf.expand_dims(dist.log_prob(raw_actions), -1)  # (n_samples, B, 1)
             log_probs -= tf.reduce_sum(-2 * (raw_actions - np.log(2) + tf.nn.softplus(-2*raw_actions)), -1, keepdims=True)
 
-        if n_samples == 1:
-            return tf.squeeze(actions, 0), tf.squeeze(log_probs, 0)  # (n_samples, B, action_dim) and (n_samples, B, 1)
-        else:
-            return actions, log_probs
+        return actions, log_probs
 
     def get_action(self, obs):
         assert obs.shape[0] == 1

@@ -53,6 +53,7 @@ class SAC:
         q2_loss = tf.losses.mean_squared_error(q2_at_memory_action, target_q)
         #   policy loss term
         actions, log_pis = policy(self.obs_ph)  # (n_samples, batch_size, action_dim) and (...,1)
+        actions, log_pis = tf.squeeze(actions, 0), tf.squeeze(log_pis, 0)
         obs_policy_actions = tf.concat([self.obs_ph, actions], 1)
         q_at_policy_action = tf.minimum(q1(obs_policy_actions), q2(obs_policy_actions))
         policy_loss = tf.reduce_mean(alpha * log_pis - q_at_policy_action)
@@ -202,7 +203,7 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
         # save
         if t % args.save_interval == 0:
             saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
-            if best_ep_length < np.mean(episode_lengths_history):
+            if best_ep_length <= np.mean(episode_lengths_history):
                 best_ep_length = np.mean(episode_lengths_history)
                 best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
 
@@ -254,7 +255,7 @@ def defaults(env_name=None):
             }.get(env_name, 0.2)
 
         return {'policy_hidden_sizes': (128, 128),
-                'student_policy_hidden_sizes': (64, 64),
+                'student_policy_hidden_sizes': (32, 32),
                 'value_hidden_sizes': (128, 128),
                 'q_hidden_sizes': (128, 128),
                 'discount': 0.99,
@@ -265,4 +266,4 @@ def defaults(env_name=None):
                 'n_prefill_steps': 1000,
                 'alpha': alpha,
                 'learn_alpha': True,
-                'n_sample_actions': 512}
+                'n_sample_actions': 32}
