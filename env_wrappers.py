@@ -151,13 +151,13 @@ class Obs2VecEnv(gym.Wrapper):
         return self.obs2vec(self.env.create())
 
 class RandomPoseInitEnv(gym.Wrapper):
-    def __init__(self, env=None, anneal_start_step=50000, anneal_end_step=100000, anneal_end_value=0.1, **kwargs):
+    def __init__(self, env=None, anneal_start_step=50000, anneal_end_step=100000, rand_pose_prob=0.1, **kwargs):
         super().__init__(env=env, **kwargs)
         # anneal pose to zero-pose
         self.anneal_start_step = anneal_start_step
         self.anneal_end_step = anneal_end_step
         self.anneal_step = 0
-        self.anneal_end_value = anneal_end_value  # % of time starting with a random init pose
+        self.rand_pose_prob = rand_pose_prob  # % of time starting with a random init pose
 
     def reset(self, **kwargs):
         seed = kwargs.get('seed', None)
@@ -183,13 +183,10 @@ class RandomPoseInitEnv(gym.Wrapper):
 
         pose = np.asarray(pose)
 
-        # compute annealed prob of starting with random init pose -- below returns eg (1, 0.9, ..., 0.2, 0.1, 0.1, ...)
-        rand_pose_prob = max(self.anneal_end_value, 1 - np.clip((self.anneal_step - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1))
-
-        # select random init pose with prob rand_pose_prob and zero pose otherwise
-        if np.random.rand() > rand_pose_prob:
-            # construct zero pose
-            pose *= 0
+        # select random init pose with prob rand_pose_prob and annealed pose otherwise
+        if np.random.rand() > self.rand_pose_prob:
+            # compute annealed prob of starting with random init pose -- below returns eg (1, 0.9, ..., 0.2, 0.1, 0.1, ...)
+            pose *= 1 - np.clip((self.anneal_step - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1)
             pose[2] = 0.94
 
         self.anneal_step += 1
@@ -227,19 +224,17 @@ class ZeroOneActionsEnv(gym.Wrapper):
 class PoolVTgtEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env, **kwargs)
-        obs_dim = env.observation_space.shape[0] - 2*11*11 + 1*3  # NOTE NOTE NOTE -- this should sync with exploration state predictor indexing into the state obs vector
+        obs_dim = env.observation_space.shape[0] - 2*11*11 + 1*5  # NOTE NOTE NOTE -- this should sync with exploration state predictor indexing into the state obs vector
         self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
 
     def pool_vtgt(self, obs):
-        # pool v_tgt_field to 3x3 map then pool dy over x coord and dx over y coord; return one-hot indicator of the argmin
-        #   ie y vtgt is the 3 positions one step above current y coord, current y coord, one step below current y coord
+        # pool v_tgt_field to 5x5 map then pool dy over x coord and dx over y coord; return one-hot indicator of the argmin
+        #   ie y vtgt is the 5 positions one step above current y coord, current y coord, one step below current y coord
         vtgt = obs['v_tgt_field'].swapaxes(1,2)[:,::-1,:]  # transpose and flip over x coord to match matplotliv quiver so easier to interpret
-        pooled_vtgt = vtgt.reshape(2,11,11)[:,::2,::2].reshape(2,3,2,3,2).mean((2,4))  # subsample and 2x2 avg pool; out (2,3,3)
-#        obs['v_tgt_field'] = np.vstack([pooled_vtgt[0].mean(0), pooled_vtgt[1].mean(1)])  # pool dx over the y coord; pool dy over x; out (2,3)
-        y_vtgt_argmin = np.abs(pooled_vtgt[1].mean(1)).argmin()  # pool dy over x coord and return one hot indicator of the argmin; out (3,)
-        y_vtgt_onehot = np.zeros(pooled_vtgt[1].shape[0])
-        y_vtgt_onehot[y_vtgt_argmin] = 1
-        obs['v_tgt_field'] = y_vtgt_onehot
+        pooled_vtgt = vtgt.reshape(2,11,11)[:,:10,:10].reshape(2,5,2,5,2).mean((2,4))  # subsample and 2x2 avg pool; out (2,5,5)
+#        obs['v_tgt_field'] = np.vstack([pooled_vtgt[0].mean(0), pooled_vtgt[1].mean(1)])  # pool dx over the y coord; pool dy over x; out (2,5)
+        y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord, out (5,)
+        obs['v_tgt_field'] = y_vtgt
         return obs
 
         return obs
@@ -259,15 +254,17 @@ class PoolVTgtEnv(gym.Wrapper):
 
 class RewardAugEnv(gym.Wrapper):
     @staticmethod
-    def compute_rewards(height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
+    def compute_rewards(y_vtgt, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
+        """ note this operates on scalars (when called by env) and vectors (when called by state predictor models) """
         # NOTE -- should be left right symmetric if using symmetric memory
 
         # switch functions if inputs are tensors
-        clip = tf.clip_by_value if isinstance(height, tf.Tensor) else np.clip
-        tanh = tf.math.tanh if isinstance(height, tf.Tensor) else np.tanh
-        where = tf.where if isinstance(height, tf.Tensor) else np.where
-        ones_like = tf.ones_like if isinstance(height, tf.Tensor) else np.ones_like
-        abs = tf.math.abs if isinstance(height, tf.Tensor) else abs
+        is_tf = isinstance(height, tf.Tensor)
+        clip = tf.clip_by_value if is_tf else np.clip
+        tanh = tf.math.tanh if is_tf else np.tanh
+        where = tf.where if is_tf else np.where
+        ones_like = tf.ones_like if is_tf else np.ones_like
+        amin = tf.reduce_min if is_tf else np.min
 
         rewards = {}
 
@@ -276,7 +273,10 @@ class RewardAugEnv(gym.Wrapper):
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 #        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
-        rewards['dx'] = 3 * clip(abs(dy)/abs(dx), 1, float('inf')) * tanh(dx)
+        # scale x vel by the vtgt magnitude at the argmin ie the sink
+        dx_scale = amin(y_vtgt, axis=1, keepdims=True)
+
+        rewards['dx'] = 2 * dx_scale * tanh(dx)
         rewards['dy'] = - 2 * tanh(2*dy)**2
         rewards['dz'] = - tanh(dz)**2
 
@@ -299,23 +299,29 @@ class RewardAugEnv(gym.Wrapper):
         o, r, d, i = self.env.step(action)
 
         # extract data
-        dy_tgt = o['v_tgt_field']
+        y_vtgt = o['v_tgt_field']
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
         lf, ll, lu = o['l_leg']['ground_reaction_forces']
 
-        rewards = self.compute_rewards(height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
+        # compute one hot vector of the pooled vtgt map indicating yaw target
+        y_vtgt_argmin = y_vtgt.argmin()  # one hot indicator of the argmin; out (5,)
+        y_vtgt_onehot = np.zeros_like(y_vtgt)
+        y_vtgt_onehot[y_vtgt_argmin] = 1
+
+        # compute rewards
+        rewards = self.compute_rewards(np.atleast_2d(y_vtgt), height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
 
         # panalize turning away from the v_tgt_field sink -- reward instead?
-        yaw_tgt = np.array([0.78, 0, -0.78]) @ dy_tgt   # yaw is (-) in the clockwise direction
+        yaw_tgt = np.array([0.78, 0.78/2, 0, -0.78/2, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
         rewards['yaw_tgt'] = 2 * (1 - np.tanh(2*(yaw - yaw_tgt))**2)
 
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
             r = 0  # remove survival bonus ie no additional change at max episode length
 
 #        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
-        r += sum(rewards.values())
+        r += float(sum(rewards.values()))
         return o, r, d, i
 
 class SkipEnv(gym.Wrapper):

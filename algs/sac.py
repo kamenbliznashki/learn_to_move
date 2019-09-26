@@ -213,7 +213,7 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
             stats['timestep'] = t
             stats['episodes'] = n_episodes
             stats['steps_per_second'] = args.log_interval / (toc - tic)
-            stats['expl_loss'] = sp_loss
+            stats['sp_model_loss'] = sp_loss
             stats['student_policy_loss'] = student_policy_loss
             stats['avg_return'] = np.mean(episode_rewards_history)
             stats['std_return'] = np.std(episode_rewards_history)
@@ -234,6 +234,7 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
 def defaults(env_name=None):
     if env_name == 'L2M2019':
         return {'policy_hidden_sizes': (256, 256),
+                'student_policy_hidden_sizes': (64, 64),
                 'value_hidden_sizes': (256, 256),
                 'q_hidden_sizes': (256, 256),
                 'discount': 0.96,
@@ -244,7 +245,7 @@ def defaults(env_name=None):
                 'n_prefill_steps': 1000,
                 'alpha': 0.2,
                 'learn_alpha': True,
-                'n_sample_actions': 128}
+                'n_sample_actions': 32}
     else:  # mujoco
         alpha = {
             'Ant-v2': 0.1,

@@ -6,7 +6,7 @@ from env_wrappers import RewardAugEnv
 
 # selct obs indices to model using the state predictors;
 # 1 .select vtgt field idxs; 0 index is start of v_tgt_field (after PoolVtgt and Obs2Vec env transforms)
-vtgt_idxs = np.array(list(range(3)))  # NOTE -- this should match the vtgt field size from obs2vec and poolvtgt
+vtgt_idxs = np.array(list(range(5)))  # NOTE -- this should match the vtgt field size from obs2vec and poolvtgt
 VTGT_OFFSET = len(vtgt_idxs)
 # 2.1 select pose idxs; 0 index is start of pose data (ie v_tgt_field excluded)
 pose_idxs = np.array([*list(range(9)),                        # pelvis       (9 obs)
@@ -17,7 +17,6 @@ pose_idxs += VTGT_OFFSET
 # 3. stack all selected idxs
 IDXS = np.hstack([vtgt_idxs, pose_idxs])
 
-IDXS = np.arange(17) #  TODO TODO TODO remove
 
 class SPEnsemble:
     def __init__(self, action_shape, action_space_low, action_space_high, *,
@@ -74,34 +73,10 @@ class SPEnsemble:
         return pred_normed_next_obs, pred_next_obs
 
     def reward_fn(self, obs, actions, pred_next_obs):
-        # TODO TODO TODO -- HalfCheetah Test
-#        height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = tf.split(pred_next_obs[...,VTGT_OFFSET: VTGT_OFFSET+9], 9, -1)
-#        rewards = RewardAugEnv.compute_rewards(height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, None, None, None, None, None, None)
-#        rewards = tf.reduce_sum([v for v in rewards.values()], 0)  # (B, 1)
-
-        states = obs
-        next_states = pred_next_obs
-        scores = 0
-
-        heading_penalty_factor = 10
-
-        # dont move front shin back so far that you tilt forward
-        front_leg = states[:, 5]
-        my_range = 0.2
-        scores += tf.cast(front_leg >= my_range, tf.float32) * heading_penalty_factor
-
-        front_shin = states[:, 6]
-        my_range = 0
-        scores += tf.cast(front_shin >= my_range, tf.float32) * heading_penalty_factor
-
-        front_foot = states[:, 7]
-        my_range = 0
-        scores += tf.cast(front_foot >= my_range, tf.float32) * heading_penalty_factor
-
-        scores -= (next_states[:, -1] - states[:, -1]) / 0.01
-
-        rewards = - scores
-
+        y_vtgt = pred_next_obs[...,:VTGT_OFFSET]
+        height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = tf.split(pred_next_obs[...,VTGT_OFFSET: VTGT_OFFSET+9], 9, -1)
+        rewards = RewardAugEnv.compute_rewards(y_vtgt, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, None, None, None, None, None, None)
+        rewards = tf.reduce_sum([v for v in rewards.values()], 0)  # (B, 1)
         return rewards
 
     def setup_action_selection(self, obs, actions_ph):
