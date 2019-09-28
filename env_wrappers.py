@@ -224,7 +224,7 @@ class ZeroOneActionsEnv(gym.Wrapper):
 class PoolVTgtEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env, **kwargs)
-        obs_dim = env.observation_space.shape[0] - 2*11*11 + 1*5  # NOTE NOTE NOTE -- this should sync with exploration state predictor indexing into the state obs vector
+        obs_dim = env.observation_space.shape[0] - 2*11*11 + 1*6  # NOTE NOTE NOTE -- this should sync with exploration state predictor indexing into the state obs vector
         self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
 
     def pool_vtgt(self, obs):
@@ -234,9 +234,9 @@ class PoolVTgtEnv(gym.Wrapper):
         pooled_vtgt = vtgt.reshape(2,11,11)[:,:10,:10].reshape(2,5,2,5,2).mean((2,4))  # subsample and 2x2 avg pool; out (2,5,5)
 #        obs['v_tgt_field'] = np.vstack([pooled_vtgt[0].mean(0), pooled_vtgt[1].mean(1)])  # pool dx over the y coord; pool dy over x; out (2,5)
         y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord, out (5,)
-        obs['v_tgt_field'] = y_vtgt
-        return obs
-
+        y_vtgt_onehot = np.zeros_like(y_vtgt)
+        y_vtgt_onehot[y_vtgt.argmin()] = 1
+        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, np.min(y_vtgt)])   # out is one hot direction and scalar dx tgt velocity
         return obs
 
     def step(self, action):
@@ -254,7 +254,7 @@ class PoolVTgtEnv(gym.Wrapper):
 
 class RewardAugEnv(gym.Wrapper):
     @staticmethod
-    def compute_rewards(y_vtgt, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
+    def compute_rewards(dx_scale, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
         """ note this operates on scalars (when called by env) and vectors (when called by state predictor models) """
         # NOTE -- should be left right symmetric if using symmetric memory
 
@@ -272,9 +272,6 @@ class RewardAugEnv(gym.Wrapper):
         rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 #        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
-
-        # scale x vel by the vtgt magnitude at the argmin ie the sink
-        dx_scale = amin(y_vtgt, axis=1, keepdims=True)
 
         rewards['dx'] = 2 * dx_scale * tanh(dx)
         rewards['dy'] = - 2 * tanh(2*dy)**2
@@ -299,19 +296,14 @@ class RewardAugEnv(gym.Wrapper):
         o, r, d, i = self.env.step(action)
 
         # extract data
-        y_vtgt = o['v_tgt_field']
+        y_vtgt_onehot, dx_scale = np.split(o['v_tgt_field'], [5], axis=-1)  # split at position 5; ie produce two arrays of shape (5,) and (1,)
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
         lf, ll, lu = o['l_leg']['ground_reaction_forces']
 
-        # compute one hot vector of the pooled vtgt map indicating yaw target
-        y_vtgt_argmin = y_vtgt.argmin()  # one hot indicator of the argmin; out (5,)
-        y_vtgt_onehot = np.zeros_like(y_vtgt)
-        y_vtgt_onehot[y_vtgt_argmin] = 1
-
         # compute rewards
-        rewards = self.compute_rewards(np.atleast_2d(y_vtgt), height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
+        rewards = self.compute_rewards(float(dx_scale), height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
 
         # panalize turning away from the v_tgt_field sink -- reward instead?
         yaw_tgt = np.array([0.78, 0.78/2, 0, -0.78/2, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction

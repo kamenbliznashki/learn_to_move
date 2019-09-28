@@ -6,7 +6,7 @@ from env_wrappers import RewardAugEnv
 
 # selct obs indices to model using the state predictors;
 # 1 .select vtgt field idxs; 0 index is start of v_tgt_field (after PoolVtgt and Obs2Vec env transforms)
-vtgt_idxs = np.array(list(range(5)))  # NOTE -- this should match the vtgt field size from obs2vec and poolvtgt
+vtgt_idxs = np.array(list(range(6)))  # NOTE -- this should match the vtgt field size from obs2vec and poolvtgt
 VTGT_OFFSET = len(vtgt_idxs)
 # 2.1 select pose idxs; 0 index is start of pose data (ie v_tgt_field excluded)
 pose_idxs = np.array([*list(range(9)),                        # pelvis       (9 obs)
@@ -74,8 +74,9 @@ class SPEnsemble:
 
     def reward_fn(self, obs, actions, pred_next_obs):
         y_vtgt = pred_next_obs[...,:VTGT_OFFSET]
+        _, dx_scale = tf.split(y_vtgt, [VTGT_OFFSET - 1, 1], axis=-1)  # out (B, vtgt_onehot) and (B, 1)
         height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = tf.split(pred_next_obs[...,VTGT_OFFSET: VTGT_OFFSET+9], 9, -1)
-        rewards = RewardAugEnv.compute_rewards(y_vtgt, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, None, None, None, None, None, None)
+        rewards = RewardAugEnv.compute_rewards(dx_scale, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, None, None, None, None, None, None)
         rewards = tf.reduce_sum([v for v in rewards.values()], 0)  # (B, 1)
         return rewards
 
