@@ -233,10 +233,11 @@ class PoolVTgtEnv(gym.Wrapper):
         vtgt = obs['v_tgt_field'].swapaxes(1,2)[:,::-1,:]  # transpose and flip over x coord to match matplotliv quiver so easier to interpret
         pooled_vtgt = vtgt.reshape(2,11,11)[:,:10,:10].reshape(2,5,2,5,2).mean((2,4))  # subsample and 2x2 avg pool; out (2,5,5)
 #        obs['v_tgt_field'] = np.vstack([pooled_vtgt[0].mean(0), pooled_vtgt[1].mean(1)])  # pool dx over the y coord; pool dy over x; out (2,5)
+        x_vtgt = np.abs(pooled_vtgt[0].mean(0))  # pool dx over y coord, out (5,)
         y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord, out (5,)
         y_vtgt_onehot = np.zeros_like(y_vtgt)
         y_vtgt_onehot[y_vtgt.argmin()] = 1
-        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, np.min(y_vtgt)])   # out is one hot direction and scalar dx tgt velocity
+        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, np.min(x_vtgt)])   # out is one hot direction and scalar dx tgt velocity
         return obs
 
     def step(self, action):
@@ -273,7 +274,7 @@ class RewardAugEnv(gym.Wrapper):
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 #        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
-        rewards['dx'] = 10 * dx_scale * (tanh(dx) + 1)
+        rewards['dx'] = 3 * dx_scale * (tanh(dx) + 1)
         rewards['dy'] = - 2 * tanh(2*dy)**2
         rewards['dz'] = - tanh(dz)**2
 
