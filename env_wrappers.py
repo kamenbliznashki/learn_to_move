@@ -13,7 +13,7 @@ import gym
 from collections import deque
 import tabulate
 
-from osim.env import L2M2019Env, OsimModel
+from osim.env import L2M2019Env
 
 
 
@@ -273,7 +273,7 @@ class RewardAugEnv(gym.Wrapper):
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 #        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
-        rewards['dx'] = 2 * dx_scale * tanh(dx)
+        rewards['dx'] = 10 * dx_scale * (tanh(dx) + 1)
         rewards['dy'] = - 2 * tanh(2*dy)**2
         rewards['dz'] = - tanh(dz)**2
 
