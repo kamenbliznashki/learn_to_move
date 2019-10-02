@@ -64,7 +64,7 @@ def get_alg_config(alg, env, extra_args=None):
 def get_env_config(env, extra_args=None):
     env_args = None
     if env == 'L2M2019':
-        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2, 'stepsize': 0.01}
+        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2, 'stepsize': 0.01, 'vtgt_kernel_size': 3}
     if extra_args is not None and env_args is not None:
         env_args.update({k: v for k, v in extra_args.items() if k in env_args})
     return env_args
@@ -94,9 +94,8 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
     if env_name == 'L2M2019':
         env = L2M2019EnvBaseWrapper(**env_args)
         env = RandomPoseInitEnv(env)
-#        env = NoopResetEnv(env)
         env = ZeroOneActionsEnv(env)
-        env = PoolVTgtEnv(env)  # NOTE -- needs to be after RewardAug if RewardAug uses the full vtgt field
+        env = PoolVTgtEnv(env, **env_args)
         env = RewardAugEnv(env)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
@@ -157,7 +156,8 @@ def main(args, extra_args):
     spmodel = None
     if args.explore:
         spmodel = getattr(import_module('algs.explore'), args.explore)
-        spmodel = spmodel(env.action_space.shape, env.action_space.low[0], env.action_space.high[0], **expl_args)
+        spmodel = spmodel(env.observation_space.shape, env.action_space.shape,
+                            env.action_space.low[0], env.action_space.high[0], **expl_args)
 
     # init session
     tf_config = tf.ConfigProto(allow_soft_placement=True, inter_op_parallelism_threads=1, intra_op_parallelism_threads=1)
@@ -209,7 +209,7 @@ def main(args, extra_args):
 
         env = L2M2019ClientWrapper(client)
         env = ZeroOneActionsEnv(env)
-        env = PoolVTgtEnv(env)
+        env = PoolVTgtEnv(env, **env_args)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
 

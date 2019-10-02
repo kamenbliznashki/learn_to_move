@@ -4,22 +4,9 @@ import tensorflow as tf
 from algs.models import Model
 from env_wrappers import RewardAugEnv
 
-# selct obs indices to model using the state predictors;
-# 1 .select vtgt field idxs; 0 index is start of v_tgt_field (after PoolVtgt and Obs2Vec env transforms)
-vtgt_idxs = np.array(list(range(6)))  # NOTE -- this should match the vtgt field size from obs2vec and poolvtgt
-VTGT_OFFSET = len(vtgt_idxs)
-# 2.1 select pose idxs; 0 index is start of pose data (ie v_tgt_field excluded)
-pose_idxs = np.array([*list(range(9)),                        # pelvis       (9 obs)
-                      *list(range(12,16)),                    # joints r leg (4 obs)
-                      *list(range(20+3*11+3,20+3*11+3+4))])   # joints l leg (4 obs)
-# 2.2 offset the pose info for the v_tgt_field size -- NOTE NOTE NOTE -- this should match vtgt field size from Obs2Vec and PoolVtgt
-pose_idxs += VTGT_OFFSET
-# 3. stack all selected idxs
-IDXS = np.hstack([vtgt_idxs, pose_idxs])
-
 
 class SPEnsemble:
-    def __init__(self, action_shape, action_space_low, action_space_high, *,
+    def __init__(self, observation_shape, action_shape, action_space_low, action_space_high, *,
                     n_state_predictors, state_predictor_hidden_sizes,
                     n_step_lookahead, lr, batch_size, n_train_steps, bonus_scale):
         self.action_shape = action_shape
@@ -33,17 +20,30 @@ class SPEnsemble:
         self.n_train_steps = n_train_steps
         self.bonus_scale = bonus_scale
 
+        # selct obs indices to model using the state predictors;
+        # 1. select vtgt field idxs; 0 index is start of v_tgt_field (after PoolVtgt and Obs2Vec env transforms)
+        self.v_tgt_field_size = observation_shape[0] - (339 - 2*11*11)  # L2M original obs dims are 339 where 2*11*11 is the orig vtgt field size
+        vtgt_idxs = np.arange(self.v_tgt_field_size)
+        # 2.1 select pose idxs; 0 index is start of pose data (ie v_tgt_field excluded)
+        pose_idxs = np.array([*list(range(9)),                        # pelvis       (9 obs)
+                              *list(range(12,16)),                    # joints r leg (4 obs)
+                              *list(range(20+3*11+3,20+3*11+3+4))])   # joints l leg (4 obs)
+        # 2.2 offset the pose info for the v_tgt_field size
+        pose_idxs += self.v_tgt_field_size
+        # 3. stack all selected idxs
+        self.idxs = np.hstack([vtgt_idxs, pose_idxs])
+
     def initialize(self, sess, policy):
         self.sess = sess
         self.policy = policy
 
         # inputs
-        self.obs_ph = tf.placeholder(tf.float32, [None, len(IDXS)], name='sp_obs')
+        self.obs_ph = tf.placeholder(tf.float32, [None, len(self.idxs)], name='sp_obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, None, *self.action_shape], name='actions')  # (n_sample_actions, n_env, action_dim)
-        self.next_obs_ph = tf.placeholder(tf.float32, [None, len(IDXS)], name='sp_next_obs')
+        self.next_obs_ph = tf.placeholder(tf.float32, [None, len(self.idxs)], name='sp_next_obs')
 
         # setup state predictor models
-        self.state_predictors = [Model('state_predictor_{}'.format(i), hidden_sizes=self.state_predictor_hidden_sizes, output_size=len(IDXS))
+        self.state_predictors = [Model('state_predictor_{}'.format(i), hidden_sizes=self.state_predictor_hidden_sizes, output_size=len(self.idxs))
                                     for i in range(self.n_state_predictors)]
 
         # setup dynamics function
@@ -73,9 +73,9 @@ class SPEnsemble:
         return pred_normed_next_obs, pred_next_obs
 
     def reward_fn(self, obs, actions, pred_next_obs):
-        y_vtgt = pred_next_obs[...,:VTGT_OFFSET]
-        _, dx_scale = tf.split(y_vtgt, [VTGT_OFFSET - 1, 1], axis=-1)  # out (B, vtgt_onehot) and (B, 1)
-        height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = tf.split(pred_next_obs[...,VTGT_OFFSET: VTGT_OFFSET+9], 9, -1)
+        y_vtgt = pred_next_obs[...,:self.v_tgt_field_size]
+        _, dx_scale = tf.split(y_vtgt, [self.v_tgt_field_size - 1, 1], axis=-1)  # out (B, vtgt_onehot) and (B, 1)
+        height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = tf.split(pred_next_obs[...,self.v_tgt_field_size: self.v_tgt_field_size+9], 9, -1)
         rewards = RewardAugEnv.compute_rewards(dx_scale, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, None, None, None, None, None, None)
         rewards = tf.reduce_sum([v for v in rewards.values()], 0)  # (B, 1)
         return rewards
@@ -109,8 +109,8 @@ class SPEnsemble:
             for _ in range(self.n_train_steps):
                 # sample memory
                 batch = memory.sample(self.batch_size)
-                obs = np.take(batch.obs, IDXS, 1)
-                next_obs = np.take(batch.next_obs, IDXS, 1)
+                obs = np.take(batch.obs, self.idxs, 1)
+                next_obs = np.take(batch.next_obs, self.idxs, 1)
                 actions = batch.actions[None,...]
                 # train
                 loss, _ = self.sess.run([loss_op, train_op],
@@ -124,7 +124,7 @@ class SPEnsemble:
             obs     -- np array; (n_env, obs_dim)
             actions -- np array; (1, n_env, actions_dim)
         """
-        obs = np.take(obs, IDXS, 1)
+        obs = np.take(obs, self.idxs, 1)
         actions = actions[None,...]
         pred_normed_next_obs = self.sess.run(self.pred_normed_next_obs, {self.obs_ph: obs, self.actions_ph: actions})
         # bonus is variance among the state predictors and along the predicted state vector
@@ -139,20 +139,20 @@ class SPEnsemble:
             actions -- np array; (n_samples, n_env, actions_dim) during training; (n_samples, 1, actions_dim) during eval
         """
         obs = np.atleast_2d(obs)
-        obs = np.take(obs, IDXS, 1)
+        obs = np.take(obs, self.idxs, 1)
         obs = np.tile(obs, (actions.shape[0], 1))
         best_actions = self.sess.run(self.best_actions, {self.obs_ph: obs, self.actions_ph: actions})
         return np.atleast_2d(best_actions)
 
     def get_pred_next_obs(self, obs, actions):
-        obs = np.take(obs, IDXS, 1)
+        obs = np.take(obs, self.idxs, 1)
         actions = actions[None,...]
         _, pred_next_obs = self.sess.run(self.pred_next_obs, {self.obs_ph: obs, self.actions_ph: actions})
         return pred_next_obs
 
     def get_student_policy_action(self, obs):
         obs = np.atleast_2d(obs)
-        obs = np.take(obs, IDXS, 1)
+        obs = np.take(obs, self.idxs, 1)
         return self.sess.run(self.actions, {self.obs_ph, obs})
 
 # --------------------

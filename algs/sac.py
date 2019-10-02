@@ -12,13 +12,13 @@ from tabulate import tabulate
 
 from algs.memory import Memory, SymmetricMemory
 from algs.models import GaussianPolicy, Model
-from algs.explore import SPEnsemble, IDXS
+from algs.explore import SPEnsemble
 import logger
 
 best_ep_length = float('-inf')
 
 class SAC:
-    def __init__(self, observation_shape, action_shape, *,
+    def __init__(self, observation_shape, action_shape, modeled_obs_idxs, *,
                     policy_hidden_sizes, student_policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes,
                     alpha, discount, tau, lr, n_sample_actions, learn_alpha=True):
         # inputs
@@ -69,7 +69,7 @@ class SAC:
         with tf.variable_scope(policy.name, reuse=True):
             policy_logits = policy.network(self.obs_ph)
         with tf.variable_scope(self.student_policy.name):
-            student_policy_obs_ph = tf.gather(self.obs_ph, IDXS, axis=1)
+            student_policy_obs_ph = tf.gather(self.obs_ph, modeled_obs_idxs, axis=1)
             student_policy_logits = self.student_policy.network(student_policy_obs_ph)
         student_policy_loss = tf.losses.mean_squared_error(policy_logits, student_policy_logits)
 
@@ -138,7 +138,7 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
 
     # set up agent
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
-    agent = SAC(env.observation_space.shape, env.action_space.shape, **alg_args)
+    agent = SAC(env.observation_space.shape, env.action_space.shape, spmodel.idxs, **alg_args)
 
     # initialize session, agent, saver
     sess = tf.get_default_session()

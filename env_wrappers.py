@@ -7,6 +7,7 @@ import time
 import csv
 
 import numpy as np
+from scipy.signal import fftconvolve
 import tensorflow as tf
 
 import gym
@@ -24,7 +25,9 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
         stepsize = kwargs.pop('stepsize', 0.01)
         self._visualize = kwargs.get('visualize', False)
         self._osim_model = None
-        super().__init__(**kwargs)  # NOTE -- L2M2019Env at init calls get_model_key() which pulls self.model; -> setting _model here initializes the model to 2D or 3D
+        super().__init__(visualize=kwargs['visualize'],
+                         integrator_accuracy=kwargs['integrator_accuracy'],
+                         difficulty=kwargs['difficulty'])  # NOTE -- L2M2019Env at init calls get_model_key() which pulls self.model; -> setting _model here initializes the model to 2D or 3D
         self.osim_model.stepsize = stepsize
 
     @property
@@ -109,7 +112,7 @@ class Obs2VecEnv(gym.Wrapper):
         res = []
 
         # target velocity field (in body frame)
-        res += obs_dict['v_tgt_field'].flatten().tolist()  # NOTE NOTE NOTE -- this should match what the state predictors exploration models take in as offset to indices selected
+        res += obs_dict['v_tgt_field'].flatten().tolist()
 
         res.append(obs_dict['pelvis']['height'])
         res.append(obs_dict['pelvis']['pitch'])
@@ -183,11 +186,7 @@ class RandomPoseInitEnv(gym.Wrapper):
 
         pose = np.asarray(pose)
 
-        # select random init pose with prob rand_pose_prob and annealed pose otherwise
-        if np.random.rand() > self.rand_pose_prob:
-            # compute annealed prob of starting with random init pose -- below returns eg (1, 0.9, ..., 0.2, 0.1, 0.1, ...)
-            pose *= 1 - np.clip((self.anneal_step - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1)
-            pose[2] = 0.94
+        pose *= 1 - np.clip((self.anneal_step - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1)
 
         self.anneal_step += 1
 
@@ -222,22 +221,35 @@ class ZeroOneActionsEnv(gym.Wrapper):
         return self.env.step((action + 1)/2)
 
 class PoolVTgtEnv(gym.Wrapper):
-    def __init__(self, env=None, **kwargs):
-        super().__init__(env, **kwargs)
-        obs_dim = env.observation_space.shape[0] - 2*11*11 + 1*6  # NOTE NOTE NOTE -- this should sync with exploration state predictor indexing into the state obs vector
+    def __init__(self, env=None, vtgt_kernel_size=3, **kwargs):
+        super().__init__(env)
+        # v_tgt_field pooling
+        self.kernel_size = (vtgt_kernel_size, vtgt_kernel_size)
+        self.kernel = np.ones(self.kernel_size) / np.prod(self.kernel_size)
+        # output size = pooled_vtgt + scale of x vel
+        #   -- eg kernel (2,2) then pooled vtgt is (5,5); kernel (3,3) then pooled vtgt is (3,3)
+        self.v_tgt_field_size = (11 - self.kernel_size[0] + 1) // self.kernel_size[0]  # pooled vtgt
+        self.v_tgt_field_size += 1  # scale of x vel
+        # adjust env reference dims
+        obs_dim = env.observation_space.shape[0] - 2*11*11 + self.v_tgt_field_size
         self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
 
     def pool_vtgt(self, obs):
-        # pool v_tgt_field to 5x5 map then pool dy over x coord and dx over y coord; return one-hot indicator of the argmin
-        #   ie y vtgt is the 5 positions one step above current y coord, current y coord, one step below current y coord
-        vtgt = obs['v_tgt_field'].swapaxes(1,2)[:,::-1,:]  # transpose and flip over x coord to match matplotliv quiver so easier to interpret
-        pooled_vtgt = vtgt.reshape(2,11,11)[:,:10,:10].reshape(2,5,2,5,2).mean((2,4))  # subsample and 2x2 avg pool; out (2,5,5)
-#        obs['v_tgt_field'] = np.vstack([pooled_vtgt[0].mean(0), pooled_vtgt[1].mean(1)])  # pool dx over the y coord; pool dy over x; out (2,5)
-        x_vtgt = np.abs(pooled_vtgt[0].mean(0))  # pool dx over y coord, out (5,)
-        y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord, out (5,)
+        # transpose and flip over x coord to match matplotliv quiver so easier to interpret
+        vtgt = obs['v_tgt_field'].swapaxes(1,2)[:,::-1,:]
+        # pool v_tgt_field to (n,n) given kernel -- average pool using strided convolution with kernel averaging the window
+        pooled_vtgt = fftconvolve(vtgt, self.kernel[None,...], mode='valid', axes=(1,2))[:, ::self.kernel_size[0], ::self.kernel_size[1]]
+        # pool and quantize x velocity to [0, 1] multiplier
+        x_vtgt = np.abs(pooled_vtgt[0].mean(0))  # pool dx over y coord
+        x_vtgt = np.min(x_vtgt)
+        x_vtgt_onehot = 0.25 if x_vtgt <= 0.25 else 1
+        # quantize turn to one hot vector
+        y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord
         y_vtgt_onehot = np.zeros_like(y_vtgt)
         y_vtgt_onehot[y_vtgt.argmin()] = 1
-        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, np.min(x_vtgt)])   # out is one hot direction and scalar dx tgt velocity
+        # out is one hot direction and scalar dx tgt velocity multiplier
+        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, x_vtgt_onehot])
+        assert len(obs['v_tgt_field']) == self.v_tgt_field_size
         return obs
 
     def step(self, action):
@@ -274,7 +286,7 @@ class RewardAugEnv(gym.Wrapper):
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 #        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
-        rewards['dx'] = 3 * dx_scale * (tanh(dx) + 1)
+        rewards['dx'] = 3 * dx_scale * tanh(dx)
         rewards['dy'] = - 2 * tanh(2*dy)**2
         rewards['dz'] = - tanh(dz)**2
 
@@ -284,8 +296,8 @@ class RewardAugEnv(gym.Wrapper):
             rewards['height'] = where(height > 0.7, 0 * ones_like(height), -5 * ones_like(height))
 
         if rl is not None:
-            rewards['grf_rl'] = - tanh(10*rl)**2  # rl outside [-0.1,0.1] approaches -1
-            rewards['grf_ll'] = - tanh(10*ll)**2
+            rewards['grf_rl'] = - tanh(10*clip(rl, float('-inf'), 0))**2  # rl outside [-0.1,0.1] approaches -1; 
+            rewards['grf_ll'] = - tanh(10*clip(ll, float('-inf'), 0))**2
 
 #        print('pelvis: ', o['pelvis'])
 #        print('ground_rf:\n', o['l_leg']['ground_reaction_forces'], '\n', o['r_leg']['ground_reaction_forces'])
@@ -297,7 +309,7 @@ class RewardAugEnv(gym.Wrapper):
         o, r, d, i = self.env.step(action)
 
         # extract data
-        y_vtgt_onehot, dx_scale = np.split(o['v_tgt_field'], [5], axis=-1)  # split at position 5; ie produce two arrays of shape (5,) and (1,)
+        y_vtgt_onehot, dx_scale = np.split(o['v_tgt_field'], [self.v_tgt_field_size - 1], axis=-1)  # split to produce two arrays of shape (n,) and (1,)  where n is the pooled v_tgt_field
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
@@ -307,11 +319,11 @@ class RewardAugEnv(gym.Wrapper):
         rewards = self.compute_rewards(float(dx_scale), height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
 
         # panalize turning away from the v_tgt_field sink -- reward instead?
-        yaw_tgt = np.array([0.78, 0.78/2, 0, -0.78/2, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
+        yaw_tgt = np.array([0.78, 0, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
         rewards['yaw_tgt'] = 2 * (1 - np.tanh(2*(yaw - yaw_tgt))**2)
 
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
-            r = 0  # remove survival bonus ie no additional change at max episode length
+            r -= 10  # remove survival bonus ie no additional change at max episode length
 
 #        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
         r += float(sum(rewards.values()))
