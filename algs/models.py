@@ -4,17 +4,21 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 
-def mlp(x, hidden_sizes, output_size, activation, output_activation):
+def mlp(x, hidden_sizes, output_size, activation, output_activation, output_kernel_initializer, output_bias_initializer):
     for h in hidden_sizes:
         x = tf.layers.dense(x, units=h, activation=activation)
-    return tf.layers.dense(x, units=output_size, activation=output_activation)
+    return tf.layers.dense(x, units=output_size, activation=output_activation,
+            kernel_initializer=output_kernel_initializer, bias_initializer=output_bias_initializer)
 
 
 class Model:
-    def __init__(self, name, hidden_sizes, output_size, activation=tf.nn.relu, output_activation=None):
+    def __init__(self, name, hidden_sizes, output_size, activation=tf.nn.relu, output_activation=None,
+                    output_kernel_initializer=None, output_bias_initializer=None):
         self.name = name
         self.network = partial(mlp, hidden_sizes=hidden_sizes, output_size=output_size,
-                                activation=activation, output_activation=output_activation)
+                                activation=activation, output_activation=output_activation,
+                                output_kernel_initializer=output_kernel_initializer,
+                                output_bias_initializer=output_bias_initializer)
 
     def __call__(self, obs):
         with tf.variable_scope(self.name, reuse=tf.AUTO_REUSE):

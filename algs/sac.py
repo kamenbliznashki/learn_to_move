@@ -34,7 +34,8 @@ class SAC:
         target_value_function = Model('target_value_function', hidden_sizes=value_hidden_sizes, output_size=1)
         q1 = Model('q1', hidden_sizes=q_hidden_sizes, output_size=1)
         q2 = Model('q2', hidden_sizes=q_hidden_sizes, output_size=1)
-        policy = GaussianPolicy('policy', hidden_sizes=policy_hidden_sizes, output_size=2*action_shape[0])
+        policy = GaussianPolicy('policy', hidden_sizes=policy_hidden_sizes, output_size=2*action_shape[0],
+                                output_kernel_initializer='zeros', output_bias_initializer='zeros')
         self.student_policy = GaussianPolicy('student_policy', hidden_sizes=student_policy_hidden_sizes, output_size=2*action_shape[0])
         if learn_alpha:
             beta = tf.Variable(tf.zeros(1), trainable=True, dtype=tf.float32, name='beta')
