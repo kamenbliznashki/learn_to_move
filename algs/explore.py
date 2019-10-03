@@ -167,5 +167,5 @@ def defaults(class_name=None):
                 'lr': 1e-3,
                 'batch_size': 256,
                 'n_train_steps': 2,
-                'bonus_scale': 2}
+                'bonus_scale': 1}
 

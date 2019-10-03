@@ -187,6 +187,7 @@ class RandomPoseInitEnv(gym.Wrapper):
         pose = np.asarray(pose)
 
         pose *= 1 - np.clip((self.anneal_step - self.anneal_start_step)/(self.anneal_end_step - self.anneal_start_step), 0, 1)
+        pose[2] = 0.94
 
         self.anneal_step += 1
 
@@ -287,7 +288,7 @@ class RewardAugEnv(gym.Wrapper):
 #        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
         rewards['dx'] = 3 * dx_scale * tanh(dx)
-        rewards['dy'] = - 2 * tanh(2*dy)**2
+        rewards['dy'] = - tanh(2*dy)**2
         rewards['dz'] = - tanh(dz)**2
 
         if isinstance(height, float):
@@ -320,7 +321,7 @@ class RewardAugEnv(gym.Wrapper):
 
         # panalize turning away from the v_tgt_field sink -- reward instead?
         yaw_tgt = np.array([0.78, 0, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
-        rewards['yaw_tgt'] = 2 * (1 - np.tanh(2*(yaw - yaw_tgt))**2)
+        rewards['yaw_tgt'] = 1 - np.tanh(2*(yaw - yaw_tgt))**2
 
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
             r -= 10  # remove survival bonus ie no additional change at max episode length
