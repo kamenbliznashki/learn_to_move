@@ -155,7 +155,7 @@ class Obs2VecEnv(gym.Wrapper):
 
 class RandomPoseInitEnv(gym.Wrapper):
     def __init__(self, env=None, anneal_start_step=50000, anneal_end_step=100000, rand_pose_prob=0.1, **kwargs):
-        super().__init__(env=env, **kwargs)
+        super().__init__(env)
         # anneal pose to zero-pose
         self.anneal_start_step = anneal_start_step
         self.anneal_end_step = anneal_end_step
@@ -214,7 +214,7 @@ class NoopResetEnv(gym.Wrapper):
 class ZeroOneActionsEnv(gym.Wrapper):
     """ transform action from tanh policies in (-1,1) to (0,1) """
     def __init__(self, env, **kwargs):
-        super().__init__(env=env, **kwargs)
+        super().__init__(env)
         self.env.action_space.low -= 1
 
     def step(self, action):
@@ -242,14 +242,12 @@ class PoolVTgtEnv(gym.Wrapper):
         pooled_vtgt = fftconvolve(vtgt, self.kernel[None,...], mode='valid', axes=(1,2))[:, ::self.kernel_size[0], ::self.kernel_size[1]]
         # pool and quantize x velocity to [0, 1] multiplier
         x_vtgt = np.abs(pooled_vtgt[0].mean(0))  # pool dx over y coord
-        x_vtgt = np.min(x_vtgt)
-        x_vtgt_onehot = 0.25 if x_vtgt <= 0.25 else 1
+        y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord and return one hot indicator of the argmin
         # quantize turn to one hot vector
-        y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord
         y_vtgt_onehot = np.zeros_like(y_vtgt)
         y_vtgt_onehot[y_vtgt.argmin()] = 1
-        # out is one hot direction and scalar dx tgt velocity multiplier
-        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, x_vtgt_onehot])
+        speed_tgt = 0.25 if np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2) < 0.25 else 1  # speed is magnitute of combined dx + dy vectors
+        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, speed_tgt])
         assert len(obs['v_tgt_field']) == self.v_tgt_field_size
         return obs
 
@@ -288,7 +286,7 @@ class RewardAugEnv(gym.Wrapper):
 #        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
         rewards['dx'] = 3 * dx_scale * tanh(dx)
-        rewards['dy'] = - tanh(2*dy)**2
+        rewards['dy'] = - 2 * tanh(2*dy)**2
         rewards['dz'] = - tanh(dz)**2
 
         if isinstance(height, float):
@@ -297,8 +295,9 @@ class RewardAugEnv(gym.Wrapper):
             rewards['height'] = where(height > 0.7, 0 * ones_like(height), -5 * ones_like(height))
 
         if rl is not None:
-            rewards['grf_rl'] = - tanh(10*clip(rl, float('-inf'), 0))**2  # rl outside [-0.1,0.1] approaches -1; 
-            rewards['grf_ll'] = - tanh(10*clip(ll, float('-inf'), 0))**2
+            # lateral forces are + in outward dir; to prevent legs from crossing incent slightly + ie outward force
+            rewards['grf_rl'] = clip(tanh(rl), 0, 0.2) + 0.2 * where(ru < 1e-3, 0 * ones_like(ru), ones_like(ru))  # reward either lateral force or foot in the air
+            rewards['grf_ll'] = clip(tanh(ll), 0, 0.2) + 0.2 * where(lu < 1e-3, 0 * ones_like(lu), ones_like(lu))
 
 #        print('pelvis: ', o['pelvis'])
 #        print('ground_rf:\n', o['l_leg']['ground_reaction_forces'], '\n', o['r_leg']['ground_reaction_forces'])
