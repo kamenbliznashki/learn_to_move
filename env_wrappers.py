@@ -283,7 +283,6 @@ class RewardAugEnv(gym.Wrapper):
         # gyroscope -- penalize pitch and roll
         rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
-#        rewards['yaw']   = - 1 * np.clip(yaw * dyaw, a_min=0, a_max=None)
 
         rewards['dx'] = 3 * dx_scale * tanh(dx)
         rewards['dy'] = - 2 * tanh(2*dy)**2
@@ -294,15 +293,6 @@ class RewardAugEnv(gym.Wrapper):
         else:
             rewards['height'] = where(height > 0.7, 0 * ones_like(height), -5 * ones_like(height))
 
-        if rl is not None:
-            # lateral forces are + in outward dir; to prevent legs from crossing incent slightly + ie outward force
-            rewards['grf_rl'] = clip(tanh(rl), 0, 0.2) + 0.2 * where(ru < 1e-3, ones_like(ru), 0 * ones_like(ru))  # reward either lateral force or foot in the air
-            rewards['grf_ll'] = clip(tanh(ll), 0, 0.2) + 0.2 * where(lu < 1e-3, ones_like(lu), 0 * ones_like(lu))
-
-#        print('pelvis: ', o['pelvis'])
-#        print('ground_rf:\n', o['l_leg']['ground_reaction_forces'], '\n', o['r_leg']['ground_reaction_forces'])
-#        print(o['v_tgt_field'])
-#        print('yaw: {:.3f}; yaw_tgt: {:.2f}; yaw reward: {:.3f}'.format(yaw, yaw_tgt, - np.tanh(yaw - yaw_tgt)**2))
         return rewards
 
     def step(self, action):
