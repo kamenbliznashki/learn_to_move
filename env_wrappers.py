@@ -296,8 +296,8 @@ class RewardAugEnv(gym.Wrapper):
 
         if rl is not None:
             # lateral forces are + in outward dir; to prevent legs from crossing incent slightly + ie outward force
-            rewards['grf_rl'] = clip(tanh(rl), 0, 0.2) + 0.2 * where(ru < 1e-3, 0 * ones_like(ru), ones_like(ru))  # reward either lateral force or foot in the air
-            rewards['grf_ll'] = clip(tanh(ll), 0, 0.2) + 0.2 * where(lu < 1e-3, 0 * ones_like(lu), ones_like(lu))
+            rewards['grf_rl'] = clip(tanh(rl), 0, 0.2) + 0.2 * where(ru < 1e-3, ones_like(ru), 0 * ones_like(ru))  # reward either lateral force or foot in the air
+            rewards['grf_ll'] = clip(tanh(ll), 0, 0.2) + 0.2 * where(lu < 1e-3, ones_like(lu), 0 * ones_like(lu))
 
 #        print('pelvis: ', o['pelvis'])
 #        print('ground_rf:\n', o['l_leg']['ground_reaction_forces'], '\n', o['r_leg']['ground_reaction_forces'])
