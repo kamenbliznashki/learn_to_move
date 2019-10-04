@@ -163,7 +163,7 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
         print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
 
     # init memory and env for training
-    memory.initialize(env, n_prefill_steps, training=(n_total_steps > 0), policy=agent if args.load_path else None)
+    memory.initialize(env, n_prefill_steps // env.num_envs, training=(n_total_steps > 0), policy=agent if args.load_path else None)
     obs = env.reset()
 
     for t in range(start_step, n_total_steps + start_step):
