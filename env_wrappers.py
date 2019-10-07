@@ -316,7 +316,8 @@ class RewardAugEnv(gym.Wrapper):
             r -= 10  # remove survival bonus ie no additional change at max episode length
 
 #        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
-        r += float(sum(rewards.values()))
+#        r += float(sum(rewards.values()))
+        i['rewards'] = float(sum(rewards.values()))
         return o, r, d, i
 
 class SkipEnv(gym.Wrapper):
@@ -327,9 +328,13 @@ class SkipEnv(gym.Wrapper):
 
     def step(self, action):
         total_reward = 0
+        aug_reward = 0
         for _ in range(self.n_skips):
             obs, reward, done, info = self.env.step(action)
             total_reward += reward
+            if 'rewards' in info:
+                aug_reward += info['rewards']
+                info['rewards'] = aug_reward
             if done:
                 break
 

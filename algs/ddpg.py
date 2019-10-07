@@ -202,9 +202,9 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
         actions = agent.get_actions(obs)
         actions = exploration.select_best_action(obs, actions) if exploration is not None else actions
         r_bonus = exploration.get_exploration_bonus(obs, actions) if exploration is not None else 0
-        next_obs, r, done, _ = env.step(actions)
+        next_obs, r, done, info = env.step(actions)
         done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
-        memory.store_transition(obs, actions, r + r_bonus, done_bool, next_obs)
+        memory.store_transition(obs, actions, r + r_bonus + info.get('rewards', 0), done_bool, next_obs)
         obs = next_obs
 
         # keep records

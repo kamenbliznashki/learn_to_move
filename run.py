@@ -182,11 +182,11 @@ def main(args, extra_args):
             action = agent.get_actions(obs)  # (n_samples, batch_size, action_dim)
             action = spmodel.get_best_action(np.atleast_2d(obs), action)
             r_bonus = spmodel.get_exploration_bonus(np.atleast_2d(obs), action).squeeze()
-            next_obs, rew, done, _ = env.step(action.flatten())
+            next_obs, rew, done, info = env.step(action.flatten())
             episode_rewards += rew
             episode_steps += 1
-            print('q value: {:.4f}; reward: {:.2f}; bonus: {:.2f}; reward so far: {:.2f}'.format(
-                agent.get_action_value(np.atleast_2d(obs), action).squeeze(), rew, r_bonus, episode_rewards))
+            print('q value: {:.4f}; reward: {:.2f}; aug_reward: {:.2f}; bonus: {:.2f}; reward so far: {:.2f}'.format(
+                agent.get_action_value(np.atleast_2d(obs), action).squeeze(), rew, info['rewards'], r_bonus, episode_rewards))
             obs = next_obs
             env.render()
             if done:
