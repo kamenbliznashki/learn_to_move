@@ -129,9 +129,11 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
     # setup tracking
     stats = {}
     episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
+    episode_aug_rew = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_bonus   = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
     episode_rewards_history = deque(maxlen=100)
+    episode_aug_rew_history = deque(maxlen=100)
     episode_bonus_history   = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
     n_episodes = 0
@@ -172,14 +174,16 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
         # sample action -> step env -> store transition
         actions = agent.get_actions(obs)  # (n_samples, batch_size, action_dim)
         actions = spmodel.get_best_action(obs, actions) if spmodel is not None else actions
-        r_bonus = spmodel.get_exploration_bonus(obs, actions) if spmodel is not None else 0
         next_obs, r, done, info = env.step(actions)
+        r_aug = sum(i.get('rewards', 0) for i in info)
+        r_bonus = spmodel.get_exploration_bonus(obs, actions) if spmodel is not None else 0
         done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
-        memory.store_transition(obs, actions, r + r_bonus + sum(i.get('rewards', 0) for i in info), done_bool, next_obs)
+        memory.store_transition(obs, actions, r + r_bonus + r_aug, done_bool, next_obs)
         obs = next_obs
 
         # keep records
         episode_rewards += r
+        episode_aug_rew += r_aug
         episode_bonus   += r_bonus
         episode_lengths += 1
 
@@ -187,11 +191,13 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
         if any(done):
             for d in np.nonzero(done)[0]:
                 episode_rewards_history.append(float(episode_rewards[d]))
+                episode_aug_rew_history.append(float(episode_aug_rew[d]))
                 episode_bonus_history.append(float(episode_bonus[d]))
                 episode_lengths_history.append(int(episode_lengths[d]))
                 n_episodes += 1
                 # reset counters
                 episode_rewards[d] = 0
+                episode_aug_rew[d] = 0
                 episode_bonus[d] = 0
                 episode_lengths[d] = 0
 
@@ -218,6 +224,8 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
             stats['student_policy_loss'] = student_policy_loss
             stats['avg_return'] = np.mean(episode_rewards_history)
             stats['std_return'] = np.std(episode_rewards_history)
+            stats['avg_aug_return'] = np.mean(episode_aug_rew_history)
+            stats['std_aug_return'] = np.std(episode_aug_rew_history)
             stats['avg_bonus'] = np.mean(episode_bonus_history)
             stats['std_bonus'] = np.std(episode_bonus_history)
             stats['avg_episode_length'] = np.mean(episode_lengths_history)

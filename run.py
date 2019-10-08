@@ -174,7 +174,7 @@ def main(args, extra_args):
     if args.play:
         if env_args: env_args['visualize'] = True
         env = make_single_env(args.env, args.rank, args.n_env + 100, args.seed, env_args, args.output_dir)
-        obs = env.reset()
+        obs = env.reset(seed=4)
         episode_rewards = 0
         episode_steps = 0
         while True:
