@@ -247,6 +247,8 @@ class PoolVTgtEnv(gym.Wrapper):
             y_vtgt_onehot = np.roll(y_vtgt_onehot, 1, -1)
         # speed target (dx_tgt) is combined dx and dy velocity magnitude, quantized to 0.5 bins
         dx_tgt = np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2) #// 0.5 * 0.5 + 0.5  #  shifted off 0, so range [0.5, 1, ...]
+        dx_tgt = np.clip(dx_tgt, 0.1, None)
+        dx_tgt = (dx_tgt < 1) * (1 / dx_tgt - 1)  # 0 until vtgt sink within 1 distance
 #        print('dx {:.2f}; dy {:.2f}; dxdy {:.2f}; dx_tgt {:.2f}'.format(
 #            x_vtgt[1], y_vtgt[1], np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2), dx_tgt))
         obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, dx_tgt])
@@ -282,11 +284,8 @@ class RewardAugEnv(gym.Wrapper):
         rewards = {}
 
         # goals -- v_tgt_field sink
-        if isinstance(dx_tgt, float):
-            rewards['vtgt_sink'] = (dx_tgt < 1) * (1 / dx_tgt  - 1)
-        else:
-            rewards['vtgt_sink'] = where(dx_tgt > 1, 0 * ones_like(dx_tgt), 1 / dx_tgt - 1)
-        #          TODO dx_tgt goal?
+        rewards['vtgt_sink'] = dx_tgt
+        # TODO dx_tgt goal?
 
         # stability -- penalize pitch and roll
         rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
