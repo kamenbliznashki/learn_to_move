@@ -222,14 +222,10 @@ class ZeroOneActionsEnv(gym.Wrapper):
         return self.env.step((action + 1)/2)
 
 class PoolVTgtEnv(gym.Wrapper):
-    def __init__(self, env=None, vtgt_kernel_size=3, **kwargs):
+    def __init__(self, env=None, **kwargs):
         super().__init__(env)
-        # v_tgt_field pooling
-        self.kernel_size = (vtgt_kernel_size, vtgt_kernel_size)
-        self.kernel = np.ones(self.kernel_size) / np.prod(self.kernel_size)
-        # output size = pooled_vtgt + scale of x vel
-        #   -- eg kernel (2,2) then pooled vtgt is (5,5); kernel (3,3) then pooled vtgt is (3,3)
-        self.v_tgt_field_size = (11 - self.kernel_size[0] + 1) // self.kernel_size[0]  # pooled vtgt
+        # v_tgt_field pooling; output size = pooled_vtgt + scale of x vel
+        self.v_tgt_field_size = 3   # v_tgt_field pooled size
         self.v_tgt_field_size += 1  # scale of x vel
         # adjust env reference dims
         obs_dim = env.observation_space.shape[0] - 2*11*11 + self.v_tgt_field_size
@@ -238,17 +234,22 @@ class PoolVTgtEnv(gym.Wrapper):
     def pool_vtgt(self, obs):
         # transpose and flip over x coord to match matplotliv quiver so easier to interpret
         vtgt = obs['v_tgt_field'].swapaxes(1,2)[:,::-1,:]
-        # pool v_tgt_field to (n,n) given kernel -- average pool using strided convolution with kernel averaging the window
-        pooled_vtgt = fftconvolve(vtgt, self.kernel[None,...], mode='valid', axes=(1,2))[:, ::self.kernel_size[0], ::self.kernel_size[1]]
-        # pool and quantize x velocity to [0, 1] multiplier
-        x_vtgt = np.abs(pooled_vtgt[0].mean(0))  # pool dx over y coord
-        y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord and return one hot indicator of the argmin
-        # quantize turn to one hot vector
+        # pool v_tgt_field to (3,3)
+        pooled_vtgt_old = vtgt.reshape(2,11,11)[:,::2,::2].reshape(2,3,2,3,2).mean((2,4))
+        # pool each coordinate
+        x_vtgt = pooled_vtgt_old[0].mean(0)  # pool dx over y coord
+        y_vtgt = np.abs(pooled_vtgt_old[1].mean(1))  # pool dy over x coord and return one hot indicator of the argmin
+        # y turning direction (yaw tgt) is one hot for [left straight right]
         y_vtgt_onehot = np.zeros_like(y_vtgt)
         y_vtgt_onehot[y_vtgt.argmin()] = 1
-        speed_tgt = 0.25 if np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2) < 0.25 else 1  # speed is magnitute of combined dx + dy vectors
-        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, speed_tgt])
-        assert len(obs['v_tgt_field']) == self.v_tgt_field_size
+        # if target is behind (x_vtgt is negative and y_vtgt_onehot is [0, 1, 0] since argmin taken on abs) then force turn
+        if x_vtgt[1] < 0 and y_vtgt_onehot[1] == 1:
+            y_vtgt_onehot = np.roll(y_vtgt_onehot, 1, -1)
+        # speed target (dx_tgt) is combined dx and dy velocity magnitude, quantized to 0.5 bins
+        dx_tgt = np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2) // 0.5 * 0.5 + 0.5  #  shifted off 0, so range [0.5, 1, ...]
+#        print('dx {:.2f}; dy {:.2f}; dxdy {:.2f}; dx_tgt {:.2f}'.format(
+#            x_vtgt[1], y_vtgt[1], np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2), dx_tgt))
+        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, dx_tgt])
         return obs
 
     def step(self, action):
@@ -266,7 +267,7 @@ class PoolVTgtEnv(gym.Wrapper):
 
 class RewardAugEnv(gym.Wrapper):
     @staticmethod
-    def compute_rewards(dx_scale, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
+    def compute_rewards(dx_tgt, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
         """ note this operates on scalars (when called by env) and vectors (when called by state predictor models) """
         # NOTE -- should be left right symmetric if using symmetric memory
 
@@ -280,14 +281,21 @@ class RewardAugEnv(gym.Wrapper):
 
         rewards = {}
 
-        # gyroscope -- penalize pitch and roll
+        # stability -- penalize pitch and roll
         rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 
-        rewards['dx'] = 3 * dx_scale * tanh(dx)
+        # velocity -- reward dx; penalize dy and dz
+        rewards['dx'] = 2 * (1 - tanh(dx - dx_tgt)**2)
         rewards['dy'] = - 2 * tanh(2*dy)**2
         rewards['dz'] = - tanh(dz)**2
 
+        # footsteps -- penalize ground reaction forces outward/lateral/(+) (ie agent pushes inward and crosses legs)
+        if ll is not None:
+            rewards['grf_ll'] = - 0.5 * tanh(10*ll)
+            rewards['grf_rl'] = - 0.5 * tanh(10*rl)
+
+        # falling
         if isinstance(height, float):
             rewards['height'] = 0 if height > 0.7 else -5
         else:
@@ -299,24 +307,27 @@ class RewardAugEnv(gym.Wrapper):
         o, r, d, i = self.env.step(action)
 
         # extract data
-        y_vtgt_onehot, dx_scale = np.split(o['v_tgt_field'], [self.v_tgt_field_size - 1], axis=-1)  # split to produce two arrays of shape (n,) and (1,)  where n is the pooled v_tgt_field
+        y_vtgt_onehot, dx_tgt = np.split(o['v_tgt_field'], [self.v_tgt_field_size - 1], axis=-1)  # split to produce two arrays of shape (n,) and (1,)  where n is the pooled v_tgt_field
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
         lf, ll, lu = o['l_leg']['ground_reaction_forces']
 
         # compute rewards
-        rewards = self.compute_rewards(float(dx_scale), height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
+        rewards = self.compute_rewards(float(dx_tgt), height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
 
-        # panalize turning away from the v_tgt_field sink -- reward instead?
+        # turning -- reward turning towards the v_tgt_field sink
         yaw_tgt = np.array([0.78, 0, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
+        yaw_tgt += yaw  # yaw target is relative to current yaw
         rewards['yaw_tgt'] = 1 - np.tanh(2*(yaw - yaw_tgt))**2
 
         if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
             r -= 10  # remove survival bonus ie no additional change at max episode length
 
+#        print('grf ll: {:.3f}; grf rl: {:.3f}'.format(ll, rl))
+#        print('yaw: ', np.round(yaw, 3), '; yaw_tgt: ', np.round(yaw_tgt, 3))
+#        print('dx_tgt: ', dx_tgt, '; y_vtgt: ', y_vtgt_onehot)
 #        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
-#        r += float(sum(rewards.values()))
         i['rewards'] = float(sum(rewards.values()))
         return o, r, d, i
 

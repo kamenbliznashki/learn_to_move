@@ -64,7 +64,7 @@ def get_alg_config(alg, env, extra_args=None):
 def get_env_config(env, extra_args=None):
     env_args = None
     if env == 'L2M2019':
-        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2, 'stepsize': 0.01, 'vtgt_kernel_size': 3}
+        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2, 'stepsize': 0.01}
     if extra_args is not None and env_args is not None:
         env_args.update({k: v for k, v in extra_args.items() if k in env_args})
     return env_args
@@ -95,7 +95,7 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
         env = L2M2019EnvBaseWrapper(**env_args)
         env = RandomPoseInitEnv(env)
         env = ZeroOneActionsEnv(env)
-        env = PoolVTgtEnv(env, **env_args)
+        env = PoolVTgtEnv(env)
         env = RewardAugEnv(env)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
@@ -209,7 +209,7 @@ def main(args, extra_args):
 
         env = L2M2019ClientWrapper(client)
         env = ZeroOneActionsEnv(env)
-        env = PoolVTgtEnv(env, **env_args)
+        env = PoolVTgtEnv(env)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
 
