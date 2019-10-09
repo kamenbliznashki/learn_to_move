@@ -298,9 +298,9 @@ class RewardAugEnv(gym.Wrapper):
 #        rewards['dz'] = - tanh(dz)**2
 
         # footsteps -- penalize ground reaction forces outward/lateral/(+) (ie agent pushes inward and crosses legs)
-        if ll is not None:
-            rewards['grf_ll'] = - 0.5 * tanh(10*ll)
-            rewards['grf_rl'] = - 0.5 * tanh(10*rl)
+#        if ll is not None:
+#            rewards['grf_ll'] = - 0.5 * tanh(10*ll)
+#            rewards['grf_rl'] = - 0.5 * tanh(10*rl)
 
         # falling
         if isinstance(height, float):
