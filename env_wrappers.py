@@ -240,8 +240,9 @@ class PoolVTgtEnv(gym.Wrapper):
         x_vtgt = pooled_vtgt_old[0].mean(0)  # pool dx over y coord
         y_vtgt = np.abs(pooled_vtgt_old[1].mean(1))  # pool dy over x coord and return one hot indicator of the argmin
         # x velocity target = [stop slow fast]
+#        dx_tgt = np.clip(np.abs(x_vtgt[1]) // 0.5 * 0.5, 0, 1) * 2 # the indices for the one hot vector (0, 1 or 2)
+        dx_tgt = np.clip(np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2) // 0.5 * 0.5, 0, 1) * 2
         x_vtgt_onehot = np.zeros_like(x_vtgt)
-        dx_tgt = np.clip(np.abs(x_vtgt[1]) // 0.5 * 0.5, 0, 1) * 2 # the indices for the one hot vector (0, 1 or 2)
         x_vtgt_onehot[int(dx_tgt)] = 1
         # y turning direction (yaw tgt) = [left straight right]
         y_vtgt_onehot = np.zeros_like(y_vtgt)
@@ -294,7 +295,7 @@ class RewardAugEnv(gym.Wrapper):
         # velocity -- reward dx; penalize dy and dz
         rewards['dx'] = (x_vtgt_onehot @ np.arange(int(x_vtgt_onehot.shape[-1]))[:,None]) * tanh(dx)
         rewards['dy'] = - 2 * tanh(2*dy)**2
-        rewards['dz'] = - tanh(dz)**2
+#        rewards['dz'] = - tanh(dz)**2
 
         # footsteps -- penalize ground reaction forces outward/lateral/(+) (ie agent pushes inward and crosses legs)
         if ll is not None:
