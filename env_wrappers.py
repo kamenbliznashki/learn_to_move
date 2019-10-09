@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from functools import partial
 import contextlib
 import multiprocessing as mp
 import os
@@ -7,7 +8,6 @@ import time
 import csv
 
 import numpy as np
-from scipy.signal import fftconvolve
 import tensorflow as tf
 
 import gym
@@ -225,8 +225,8 @@ class PoolVTgtEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env)
         # v_tgt_field pooling; output size = pooled_vtgt + scale of x vel
-        self.v_tgt_field_size = 3   # v_tgt_field pooled size
-        self.v_tgt_field_size += 1  # scale of x vel
+        self.v_tgt_field_size = 6   # v_tgt_field pooled size for x and y
+        self.v_tgt_field_size += 1  # distance to vtgt sink
         # adjust env reference dims
         obs_dim = env.observation_space.shape[0] - 2*11*11 + self.v_tgt_field_size
         self.observation_space = gym.spaces.Box(np.zeros(obs_dim), np.zeros(obs_dim))
@@ -239,19 +239,21 @@ class PoolVTgtEnv(gym.Wrapper):
         # pool each coordinate
         x_vtgt = pooled_vtgt_old[0].mean(0)  # pool dx over y coord
         y_vtgt = np.abs(pooled_vtgt_old[1].mean(1))  # pool dy over x coord and return one hot indicator of the argmin
-        # y turning direction (yaw tgt) is one hot for [left straight right]
+        # x velocity target = [stop slow fast]
+        x_vtgt_onehot = np.zeros_like(x_vtgt)
+        dx_tgt = np.clip(np.abs(x_vtgt[1]) // 0.5 * 0.5, 0, 1) * 2 # the indices for the one hot vector (0, 1 or 2)
+        x_vtgt_onehot[int(dx_tgt)] = 1
+        # y turning direction (yaw tgt) = [left straight right]
         y_vtgt_onehot = np.zeros_like(y_vtgt)
         y_vtgt_onehot[y_vtgt.argmin()] = 1
         # if target is behind (x_vtgt is negative and y_vtgt_onehot is [0, 1, 0] since argmin taken on abs) then force turn
         if x_vtgt[1] < 0 and y_vtgt_onehot[1] == 1:
             y_vtgt_onehot = np.roll(y_vtgt_onehot, 1, -1)
-        # speed target (dx_tgt) is combined dx and dy velocity magnitude, quantized to 0.5 bins
-        dx_tgt = np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2) #// 0.5 * 0.5 + 0.5  #  shifted off 0, so range [0.5, 1, ...]
-        dx_tgt = np.clip(dx_tgt, 0.1, None)
-        dx_tgt = (dx_tgt < 1) * (1 / dx_tgt - 1)  # 0 until vtgt sink within 1 distance
+        # distance to vtgt sink
+        goal_distance = np.clip(np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2), None, 1)
 #        print('dx {:.2f}; dy {:.2f}; dxdy {:.2f}; dx_tgt {:.2f}'.format(
 #            x_vtgt[1], y_vtgt[1], np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2), dx_tgt))
-        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, dx_tgt])
+        obs['v_tgt_field'] = np.hstack([x_vtgt_onehot, y_vtgt_onehot, goal_distance])
         return obs
 
     def step(self, action):
@@ -269,7 +271,7 @@ class PoolVTgtEnv(gym.Wrapper):
 
 class RewardAugEnv(gym.Wrapper):
     @staticmethod
-    def compute_rewards(dx_tgt, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
+    def compute_rewards(x_vtgt_onehot, goal_distance, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
         """ note this operates on scalars (when called by env) and vectors (when called by state predictor models) """
         # NOTE -- should be left right symmetric if using symmetric memory
 
@@ -279,20 +281,18 @@ class RewardAugEnv(gym.Wrapper):
         tanh = tf.math.tanh if is_tf else np.tanh
         where = tf.where if is_tf else np.where
         ones_like = tf.ones_like if is_tf else np.ones_like
-        amin = tf.reduce_min if is_tf else np.min
 
         rewards = {}
 
         # goals -- v_tgt_field sink
-        rewards['vtgt_sink'] = dx_tgt
-        # TODO dx_tgt goal?
+        rewards['vtgt_goal'] = tanh(1 / clip(goal_distance, 0.1, float('inf')) - 1)
 
         # stability -- penalize pitch and roll
         rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 
         # velocity -- reward dx; penalize dy and dz
-        rewards['dx'] = 2 * tanh(dx)
+        rewards['dx'] = (x_vtgt_onehot @ np.arange(int(x_vtgt_onehot.shape[-1]))[:,None]) * tanh(dx)
         rewards['dy'] = - 2 * tanh(2*dy)**2
         rewards['dz'] = - tanh(dz)**2
 
@@ -303,9 +303,9 @@ class RewardAugEnv(gym.Wrapper):
 
         # falling
         if isinstance(height, float):
-            rewards['height'] = 0 if height > 0.7 else -5
+            rewards['height'] = 0 if height > 0.75 else -5
         else:
-            rewards['height'] = where(height > 0.7, 0 * ones_like(height), -5 * ones_like(height))
+            rewards['height'] = where(height > 0.75, 0 * ones_like(height), -5 * ones_like(height))
 
         return rewards
 
@@ -313,22 +313,20 @@ class RewardAugEnv(gym.Wrapper):
         o, r, d, i = self.env.step(action)
 
         # extract data
-        y_vtgt_onehot, dx_tgt = np.split(o['v_tgt_field'], [self.v_tgt_field_size - 1], axis=-1)  # split to produce two arrays of shape (n,) and (1,)  where n is the pooled v_tgt_field
+        x_vtgt_onehot, y_vtgt_onehot, goal_distance = np.split(
+                o['v_tgt_field'], [(self.v_tgt_field_size - 1)//2, self.v_tgt_field_size - 1], axis=-1)  # split to produce 3 arrays of shape (n,), (n,) and (1,)  where n is half the pooled v_tgt_field
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
         lf, ll, lu = o['l_leg']['ground_reaction_forces']
 
         # compute rewards
-        rewards = self.compute_rewards(float(dx_tgt), height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
+        rewards = self.compute_rewards(x_vtgt_onehot, goal_distance, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
 
         # turning -- reward turning towards the v_tgt_field sink
         yaw_tgt = np.array([0.78, 0, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
         yaw_tgt += yaw  # yaw target is relative to current yaw
         rewards['yaw_tgt'] = 1 - np.tanh(2*(yaw - yaw_tgt))**2
-
-        if not self.env.is_done() and (self.env.osim_model.istep >= self.env.spec.timestep_limit): #and self.failure_mode is 'success':
-            r -= 10  # remove survival bonus ie no additional change at max episode length
 
 #        print('grf ll: {:.3f}; grf rl: {:.3f}'.format(ll, rl))
 #        print('yaw: ', np.round(yaw, 3), '; yaw_tgt: ', np.round(yaw_tgt, 3))
