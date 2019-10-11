@@ -56,7 +56,7 @@ class Memory:
         for _ in range(n_prefill_steps):
             actions = np.random.uniform(-1, 1, (env.num_envs,) + self.action_shape) if policy is None else policy.get_actions(self.current_obs)[0]
             next_obs, r, done, info = env.step(actions)
-            r_aug = sum(i.get('rewards', 0) for i in info)
+            r_aug = np.vstack([i.get('rewards', 0) for i in info])
             self.store_transition(self.current_obs, actions, r + r_aug, done, next_obs, training)
             self.current_obs = next_obs
 
