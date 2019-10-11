@@ -225,7 +225,7 @@ class PoolVTgtEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env)
         # v_tgt_field pooling; output size = pooled_vtgt + scale of x vel
-        self.v_tgt_field_size = 6   # v_tgt_field pooled size for x and y
+        self.v_tgt_field_size = 3   # v_tgt_field pooled size for x and y
         self.v_tgt_field_size += 1  # distance to vtgt sink
         # adjust env reference dims
         obs_dim = env.observation_space.shape[0] - 2*11*11 + self.v_tgt_field_size
@@ -235,15 +235,10 @@ class PoolVTgtEnv(gym.Wrapper):
         # transpose and flip over x coord to match matplotliv quiver so easier to interpret
         vtgt = obs['v_tgt_field'].swapaxes(1,2)[:,::-1,:]
         # pool v_tgt_field to (3,3)
-        pooled_vtgt_old = vtgt.reshape(2,11,11)[:,::2,::2].reshape(2,3,2,3,2).mean((2,4))
+        pooled_vtgt = vtgt.reshape(2,11,11)[:,::2,::2].reshape(2,3,2,3,2).mean((2,4))
         # pool each coordinate
-        x_vtgt = pooled_vtgt_old[0].mean(0)  # pool dx over y coord
-        y_vtgt = np.abs(pooled_vtgt_old[1].mean(1))  # pool dy over x coord and return one hot indicator of the argmin
-        # x velocity target = [stop slow fast]
-#        dx_tgt = np.clip(np.abs(x_vtgt[1]) // 0.5 * 0.5, 0, 1) * 2 # the indices for the one hot vector (0, 1 or 2)
-        dx_tgt = np.clip(np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2) // 0.5 * 0.5, 0, 1) * 2
-        x_vtgt_onehot = np.zeros_like(x_vtgt)
-        x_vtgt_onehot[int(dx_tgt)] = 1
+        x_vtgt = pooled_vtgt[0].mean(0)  # pool dx over y coord
+        y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord and return one hot indicator of the argmin
         # y turning direction (yaw tgt) = [left straight right]
         y_vtgt_onehot = np.zeros_like(y_vtgt)
         y_vtgt_onehot[y_vtgt.argmin()] = 1
@@ -251,10 +246,12 @@ class PoolVTgtEnv(gym.Wrapper):
         if x_vtgt[1] < 0 and y_vtgt_onehot[1] == 1:
             y_vtgt_onehot = np.roll(y_vtgt_onehot, 1, -1)
         # distance to vtgt sink
-        goal_distance = np.clip(np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2), None, 1)
+        goal_dist = np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2)            # e.g.  [2. , 1.5, 1. , 0.5,  0.]
+        goal_dist = np.clip(goal_dist, 0.1, None)                   #       [2. , 1.5, 1. , 0.5, 0.1]
+        goal_dist = np.clip(np.tanh(1 / goal_dist) - 0.5, 0, None)  #       [0. , 0.165, 0.462, 0.905, 0.999]
 #        print('dx {:.2f}; dy {:.2f}; dxdy {:.2f}; dx_tgt {:.2f}'.format(
 #            x_vtgt[1], y_vtgt[1], np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2), dx_tgt))
-        obs['v_tgt_field'] = np.hstack([x_vtgt_onehot, y_vtgt_onehot, goal_distance])
+        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, goal_dist])
         return obs
 
     def step(self, action):
@@ -272,7 +269,7 @@ class PoolVTgtEnv(gym.Wrapper):
 
 class RewardAugEnv(gym.Wrapper):
     @staticmethod
-    def compute_rewards(x_vtgt_onehot, goal_distance, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
+    def compute_rewards(goal_dist, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
         """ note this operates on scalars (when called by env) and vectors (when called by state predictor models) """
         # NOTE -- should be left right symmetric if using symmetric memory
 
@@ -286,27 +283,22 @@ class RewardAugEnv(gym.Wrapper):
         rewards = {}
 
         # goals -- v_tgt_field sink
-        rewards['vtgt_goal'] = tanh(1 / clip(goal_distance, 0.1, float('inf')) - 1)
+        rewards['vtgt_goal'] = goal_dist
 
         # stability -- penalize pitch and roll
         rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 
         # velocity -- reward dx; penalize dy and dz
-        rewards['dx'] = (x_vtgt_onehot @ np.arange(int(x_vtgt_onehot.shape[-1]))[:,None]) * tanh(dx)
+        rewards['dx'] = 2 * tanh(dx)
         rewards['dy'] = - 2 * tanh(2*dy)**2
 #        rewards['dz'] = - tanh(dz)**2
 
-        # footsteps -- penalize ground reaction forces outward/lateral/(+) (ie agent pushes inward and crosses legs)
-#        if ll is not None:
-#            rewards['grf_ll'] = - 0.5 * tanh(10*ll)
-#            rewards['grf_rl'] = - 0.5 * tanh(10*rl)
-
         # falling
         if isinstance(height, float):
-            rewards['height'] = 0 if height > 0.75 else -5
+            rewards['height'] = 0 if height > 0.70 else -5
         else:
-            rewards['height'] = where(height > 0.75, 0 * ones_like(height), -5 * ones_like(height))
+            rewards['height'] = where(height > 0.70, 0 * ones_like(height), -5 * ones_like(height))
 
         return rewards
 
@@ -314,15 +306,14 @@ class RewardAugEnv(gym.Wrapper):
         o, r, d, i = self.env.step(action)
 
         # extract data
-        x_vtgt_onehot, y_vtgt_onehot, goal_distance = np.split(
-                o['v_tgt_field'], [(self.v_tgt_field_size - 1)//2, self.v_tgt_field_size - 1], axis=-1)  # split to produce 3 arrays of shape (n,), (n,) and (1,)  where n is half the pooled v_tgt_field
+        y_vtgt_onehot, goal_distance = np.split(o['v_tgt_field'], [self.v_tgt_field_size - 1], axis=-1)  # split to produce 3 arrays of shape (n,), (n,) and (1,)  where n is half the pooled v_tgt_field
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
         lf, ll, lu = o['l_leg']['ground_reaction_forces']
 
         # compute rewards
-        rewards = self.compute_rewards(x_vtgt_onehot, goal_distance, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
+        rewards = self.compute_rewards(goal_distance, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
 
         # turning -- reward turning towards the v_tgt_field sink
         yaw_tgt = np.array([0.78, 0, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
