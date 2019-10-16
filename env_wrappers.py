@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from functools import partial
 import contextlib
 import multiprocessing as mp
 import os
@@ -169,15 +168,31 @@ class RandomPoseInitEnv(gym.Wrapper):
             np.random.seed(seed)
 
         # construct random pose
-        y_vel = np.random.uniform(-0.25, 0.25)
-        leg1 = [0, np.random.uniform(-0.4, 0), np.random.uniform(-1.75, -1.25), np.random.uniform(-0.5, -0.9)]  # foot in the air
-        leg2 = [0, np.random.uniform(-0.05, 0.25), np.random.uniform(-0.25, -0.015), -0.25]
+        #  init pose vector is:
+        #       [forward speed
+        #        rightward speed
+        #        pelvis height
+        #        trunk lean
+        #        [right] hip adduct
+        #        hip flex
+        #        knee extend
+        #        ankle flex
+        #        [left] hip adduct  == - inward / + outward
+        #        hip flex           == - in forward (ie knee up in front) direction; + in backward (knee behind) direction
+        #        knee extend        == - normal bent knee / + knee bents forward over the knee cap
+        #        ankle flex]        == - toes point up / + extend toes away
 
-        x_vel = np.clip(np.abs(np.random.normal(0, 1.25)), a_min=None, a_max=3.5)
+        x_vel = np.clip(np.abs(np.random.normal(0, 1.5)), a_min=None, a_max=3.5)
+        y_vel = np.random.uniform(-0.15, 0.15)
+        # foot in the air
+        leg1 = [np.random.uniform(0, 0.1), np.random.uniform(-1, 0.3), np.random.uniform(-1.3, -0.5), np.random.uniform(-0.9, -0.5)]
+        # foot on the ground
+        leg2 = [np.random.uniform(0, 0.1), np.random.uniform(-0.25, 0.05), np.random.uniform(-0.5, -0.25), -0.25]
+
         pose = [x_vel,
                 y_vel,
                 0.94,
-                np.random.uniform(-0.25, 0.25)]
+                np.random.uniform(-0.15, 0.15)]
 
         if y_vel > 0:
             pose += leg1 + leg2
@@ -211,21 +226,25 @@ class NoopResetEnv(gym.Wrapper):
         return o
 
 
-class ZeroOneActionsEnv(gym.Wrapper):
+class ActionAugEnv(gym.Wrapper):
     """ transform action from tanh policies in (-1,1) to (0,1) """
     def __init__(self, env, **kwargs):
         super().__init__(env)
-        self.env.action_space.low -= 1
+        action_dim = self.env.action_space.shape[0] - 2
+        # policy actions in [-1,1]
+        self.env.action_space = gym.spaces.Box(-1 * np.ones(action_dim), np.ones(action_dim))
 
     def step(self, action):
         # input in [-1,1], output in [0,1]
+        # zero out L/R hip adductors -- let's see if it prevents leg crossing / is necessery to talk
+        action = np.insert(action, [1, 12], -1)  # insert -1 in positions 1 and 12 ie output is (22,) and pos 1 and 12 are -1 (the hip adductors are inactive)
         return self.env.step((action + 1)/2)
 
 class PoolVTgtEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env)
         # v_tgt_field pooling; output size = pooled_vtgt + scale of x vel
-        self.v_tgt_field_size = 3   # v_tgt_field pooled size for x and y
+        self.v_tgt_field_size = 4   # v_tgt_field pooled size for x and y
         self.v_tgt_field_size += 1  # distance to vtgt sink
         # adjust env reference dims
         obs_dim = env.observation_space.shape[0] - 2*11*11 + self.v_tgt_field_size
@@ -239,19 +258,18 @@ class PoolVTgtEnv(gym.Wrapper):
         # pool each coordinate
         x_vtgt = pooled_vtgt[0].mean(0)  # pool dx over y coord
         y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord and return one hot indicator of the argmin
-        # y turning direction (yaw tgt) = [left straight right]
+        # y turning direction (yaw tgt) = [left, straight, right]
         y_vtgt_onehot = np.zeros_like(y_vtgt)
-        y_vtgt_onehot[y_vtgt.argmin()] = 1
-        # if target is behind (x_vtgt is negative and y_vtgt_onehot is [0, 1, 0] since argmin taken on abs) then force turn
-        if x_vtgt[1] < 0 and y_vtgt_onehot[1] == 1:
-            y_vtgt_onehot = np.roll(y_vtgt_onehot, 1, -1)
+        y_vtgt_argsort = y_vtgt.argsort()
+        # if target is behind (x_vtgt is negative and y_vtgt is [0, 1, 0] ie argmin is 1, then choose second to argmin to force turn
+        y_vtgt_onehot[y_vtgt_argsort[1] if (y_vtgt[1] < 1 and y_vtgt_argsort[0] == 1) else y_vtgt_argsort[0]] = 1
         # distance to vtgt sink
-        goal_dist = np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2)            # e.g.  [2. , 1.5, 1. , 0.5,  0.]
-        goal_dist = np.clip(goal_dist, 0.1, None)                   #       [2. , 1.5, 1. , 0.5, 0.1]
-        goal_dist = np.clip(np.tanh(1 / goal_dist) - 0.5, 0, None)  #       [0. , 0.165, 0.462, 0.905, 0.999]
+        goal_dist = np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2)
+        # x speed tgt = [stop, go]
+        x_vtgt_onehot = (goal_dist > 0.3)
 #        print('dx {:.2f}; dy {:.2f}; dxdy {:.2f}; dx_tgt {:.2f}'.format(
 #            x_vtgt[1], y_vtgt[1], np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2), dx_tgt))
-        obs['v_tgt_field'] = np.hstack([y_vtgt_onehot, goal_dist])
+        obs['v_tgt_field'] = np.hstack([x_vtgt_onehot, y_vtgt_onehot, goal_dist])
         return obs
 
     def step(self, action):
@@ -269,7 +287,7 @@ class PoolVTgtEnv(gym.Wrapper):
 
 class RewardAugEnv(gym.Wrapper):
     @staticmethod
-    def compute_rewards(goal_dist, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
+    def compute_rewards(x_vtgt_onehot, goal_dist, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
         """ note this operates on scalars (when called by env) and vectors (when called by state predictor models) """
         # NOTE -- should be left right symmetric if using symmetric memory
 
@@ -279,26 +297,30 @@ class RewardAugEnv(gym.Wrapper):
         tanh = tf.math.tanh if is_tf else np.tanh
         where = tf.where if is_tf else np.where
         ones_like = tf.ones_like if is_tf else np.ones_like
+        abs_ = tf.math.abs if is_tf else np.abs
 
         rewards = {}
 
         # goals -- v_tgt_field sink
-        rewards['vtgt_goal'] = goal_dist
+        rewards['vtgt_dist'] = clip(tanh(1 / clip(goal_dist, 0.1, float('inf')) - 0.5), 0, float('inf'))  # e.g. [0. , 0.165, 0.462, 0.905, 0.999] for goal dist [2. , 1.5, 1. , 0.5, 0.1]
+        rewards['vtgt_goal'] = where(goal_dist < 0.3, 5 * ones_like(goal_dist), 0 * ones_like(goal_dist))
 
         # stability -- penalize pitch and roll
-        rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
-        rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
+        rewards['pitch'] = - 1 * abs_(pitch)
+        rewards['roll']  = - 1 * abs_(roll)
 
         # velocity -- reward dx; penalize dy and dz
-        rewards['dx'] = 2 * tanh(dx)
-        rewards['dy'] = - 2 * tanh(2*dy)**2
-#        rewards['dz'] = - tanh(dz)**2
+        rewards['dx'] = where(x_vtgt_onehot == 1, 2 * tanh(dx), 2 * ones_like(dx))
+        rewards['dy'] = - 2 * abs_(dy)
+#        rewards['dz'] = - np.tanh(dz)**2
+
+        # footsteps -- penalize ground reaction forces outward/lateral/(+) (ie agent pushes inward and crosses legs)
+#        if ll is not None:
+#            rewards['grf_ll'] = - 0.5 * np.tanh(10*ll)
+#            rewards['grf_rl'] = - 0.5 * np.tanh(10*rl)
 
         # falling
-        if isinstance(height, float):
-            rewards['height'] = 0 if height > 0.70 else -5
-        else:
-            rewards['height'] = where(height > 0.70, 0 * ones_like(height), -5 * ones_like(height))
+        rewards['height'] = where(height > 0.70, 0 * ones_like(height), -5 * ones_like(height))
 
         return rewards
 
@@ -306,19 +328,23 @@ class RewardAugEnv(gym.Wrapper):
         o, r, d, i = self.env.step(action)
 
         # extract data
-        y_vtgt_onehot, goal_distance = np.split(o['v_tgt_field'], [self.v_tgt_field_size - 1], axis=-1)  # split to produce 3 arrays of shape (n,), (n,) and (1,)  where n is half the pooled v_tgt_field
+        x_vtgt_onehot, y_vtgt_onehot, goal_dist = np.split(o['v_tgt_field'], [1, self.v_tgt_field_size - 1], axis=-1)  # split to produce 3 arrays of shape (n,), (n,) and (1,)  where n is half the pooled v_tgt_field
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
         lf, ll, lu = o['l_leg']['ground_reaction_forces']
+        # convert to array for compute_rewards fn
+        goal_dist = np.asarray(goal_dist)
+        height = np.asarray(height)
+        dx = np.asarray(dx)
 
         # compute rewards
-        rewards = self.compute_rewards(goal_distance, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
+        rewards = self.compute_rewards(x_vtgt_onehot, goal_dist, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
 
         # turning -- reward turning towards the v_tgt_field sink
         yaw_tgt = np.array([0.78, 0, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
         yaw_tgt += yaw  # yaw target is relative to current yaw
-        rewards['yaw_tgt'] = 1 - np.tanh(2*(yaw - yaw_tgt))**2
+        rewards['yaw_tgt'] = 2 * (1 - np.tanh(2*(yaw - yaw_tgt))**2)
 
 #        print('grf ll: {:.3f}; grf rl: {:.3f}'.format(ll, rl))
 #        print('yaw: ', np.round(yaw, 3), '; yaw_tgt: ', np.round(yaw_tgt, 3))
@@ -503,12 +529,6 @@ class VecEnv(ABC):
         self.step_async(actions)
         return self.step_wait()
 
-    @property
-    def unwrapped(self):
-        if isinstance(self, VecEnvWrapper):
-            return self.venv.unwrapped
-        else:
-            return self
 
 class DummyVecEnv(VecEnv):
     """

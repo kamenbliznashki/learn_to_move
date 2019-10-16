@@ -74,9 +74,9 @@ class SPEnsemble:
 
     def reward_fn(self, obs, actions, pred_next_obs):
         vtgt = pred_next_obs[...,:self.v_tgt_field_size]
-        _, goal_dist = tf.split(vtgt, [self.v_tgt_field_size - 1, 1], axis=-1)  # out (B, x_vtgt_onehot), (B, y_vtgt_onehot) and (B, 1)
+        x_vtgt_onehot, _, goal_dist = tf.split(vtgt, [1, self.v_tgt_field_size - 2, 1], axis=-1)  # out (B, x_vtgt_onehot), (B, y_vtgt_onehot) and (B, 1)
         height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw = tf.split(pred_next_obs[...,self.v_tgt_field_size: self.v_tgt_field_size+9], 9, -1)
-        rewards = RewardAugEnv.compute_rewards(goal_dist, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, None, None, None, None, None, None)
+        rewards = RewardAugEnv.compute_rewards(x_vtgt_onehot, goal_dist, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, None, None, None, None, None, None)
         rewards = tf.reduce_sum([v for v in rewards.values()], 0)  # (B, 1)
         return rewards
 

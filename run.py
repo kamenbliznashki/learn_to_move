@@ -10,7 +10,7 @@ import tensorflow.compat.v1 as tf
 tf.logging.set_verbosity(tf.logging.ERROR)
 
 from env_wrappers import DummyVecEnv, SubprocVecEnv, Monitor, L2M2019EnvBaseWrapper, RandomPoseInitEnv, \
-                            ZeroOneActionsEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv, L2M2019ClientWrapper
+                            ActionAugEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv, L2M2019ClientWrapper
 from logger import save_json, load_json
 
 try:
@@ -94,8 +94,8 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
     if env_name == 'L2M2019':
         env = L2M2019EnvBaseWrapper(**env_args)
         env = RandomPoseInitEnv(env)
-        env = ZeroOneActionsEnv(env)
-        env = PoolVTgtEnv(env)
+        env = ActionAugEnv(env)
+        env = PoolVTgtEnv(env, **env_args)
         env = RewardAugEnv(env)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
@@ -208,8 +208,8 @@ def main(args, extra_args):
         )
 
         env = L2M2019ClientWrapper(client)
-        env = ZeroOneActionsEnv(env)
-        env = PoolVTgtEnv(env)
+        env = ActionAugEnv(env)
+        env = PoolVTgtEnv(env, **env_args)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
 
