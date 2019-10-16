@@ -310,7 +310,7 @@ class RewardAugEnv(gym.Wrapper):
         rewards['roll']  = - 1 * abs_(roll)
 
         # velocity -- reward dx; penalize dy and dz
-        rewards['dx'] = where(x_vtgt_onehot == 1, 2 * tanh(dx), 2 * ones_like(dx))
+        rewards['dx'] = where(x_vtgt_onehot == 1, 2 * tanh(dx), 2 * (1 - tanh(5*dx)**2))
         rewards['dy'] = - 2 * abs_(dy)
 #        rewards['dz'] = - np.tanh(dz)**2
 
