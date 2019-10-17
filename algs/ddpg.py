@@ -22,7 +22,7 @@ best_ep_length = float('-inf')
 
 class DDPG:
     def __init__(self, head_idx, observation_shape, action_shape, min_action, max_action, *,
-                    policy_hidden_sizes, q_hidden_sizes, discount, tau, expl_noise, q_lr, policy_lr, lr=None):
+                    policy_hidden_sizes, q_hidden_sizes, discount, n_step_returns, tau, expl_noise, q_lr, policy_lr, lr=None):
         self.min_action = min_action
         self.max_action = max_action
         self.tau = tau
@@ -35,7 +35,7 @@ class DDPG:
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, *action_shape], name='actions')
-        self.rewards_ph = tf.placeholder(tf.float32, [None, 1], name='rewards')
+        self.rewards_ph = tf.placeholder(tf.float32, [None, n_step_returns], name='rewards')
         self.dones_ph = tf.placeholder(tf.float32, [None, 1], name='dones')
         self.next_obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='next_obs')
 
@@ -59,10 +59,11 @@ class DDPG:
         q_value_at_policy_action = self.q(obs_policy_actions) + q_prior(obs_policy_actions)
 
         # select next action according to the policy_target
-        next_actions = policy_target(self.next_obs_ph)
+        nth_actions = policy_target(self.next_obs_ph)
         # compute q targets
-        q_target_value = q_target(tf.concat([self.next_obs_ph, next_actions], 1))
-        q_target_value = self.rewards_ph + tf.stop_gradient(discount * q_target_value * (1 - self.dones_ph))
+        q_nth_value = q_target(tf.concat([self.next_obs_ph, nth_actions], 1))
+        rewards = tf.reduce_sum(self.rewards_ph * discount**np.arange(n_step_returns), axis=1, keepdims=True)
+        q_target_value = rewards + tf.stop_gradient(discount**n_step_returns * q_nth_value * (1 - self.dones_ph))
 
         # 2. loss on critics and actor
         self.q_loss = tf.losses.mean_squared_error(self.q_value, q_target_value)
@@ -157,6 +158,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     n_prefill_steps = alg_args.pop('n_prefill_steps')
     n_heads = alg_args.pop('n_heads')
     episode_length = alg_args.pop('episode_length', 1000)
+    n_step_returns = alg_args.get('n_step_returns', 1)
     global best_ep_length
 
     # setup tracking
@@ -172,7 +174,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     t = 0
 
     # set up agent
-    memory = EnsembleMemory(n_heads, int(max_memory_size), env.observation_space.shape, env.action_space.shape)
+    memory = EnsembleMemory(n_heads, int(max_memory_size), env.observation_space.shape, env.action_space.shape, n_step_returns)
     agent_cls = DDPG if MPI is None else DDPGMPI
     agent = BootstrappedAgent(agent_cls, n_heads,
                               args=(env.observation_space.shape, env.action_space.shape, env.action_space.low[0], env.action_space.high[0]),
@@ -310,6 +312,7 @@ def defaults(env_name=None):
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': 1000,
                 'expl_noise': 0.,
+                'n_step_returns': 3,
                 'n_heads': 5}
     else:  # mujoco
         n_prefill_steps = {
@@ -329,5 +332,7 @@ def defaults(env_name=None):
                 'policy_lr': 1e-3,
                 'batch_size': 64,
                 'max_memory_size': int(1e6),
-                'n_prefill_steps': n_prefill_steps}
+                'n_prefill_steps': n_prefill_steps,
+                'n_step_returns': 3,
+                'n_heads': 5}
 

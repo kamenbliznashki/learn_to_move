@@ -298,12 +298,12 @@ class RewardAugEnv(gym.Wrapper):
         rewards['vtgt_goal'] = np.where(goal_dist < 0.3, 5 * np.ones_like(goal_dist), np.zeros_like(goal_dist))
 
         # stability -- penalize pitch and roll
-        rewards['pitch'] = - 1 * np.abs(pitch)
-        rewards['roll']  = - 1 * np.abs(roll)
+        rewards['pitch'] = - 1 * np.clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
+        rewards['roll']  = - 1 * np.clip(roll * droll, 0, float('inf'))
 
         # velocity -- reward dx; penalize dy and dz
         rewards['dx'] = np.where(x_vtgt_onehot == 1, 2 * np.tanh(dx), 2 * (1 - np.tanh(5*dx)**2))
-        rewards['dy'] = - 2 * np.abs(dy)
+        rewards['dy'] = - 2 * np.tanh(2*dy)**2
 #        rewards['dz'] = - np.tanh(dz)**2
 
         # footsteps -- penalize ground reaction forces outward/lateral/(+) (ie agent pushes inward and crosses legs)

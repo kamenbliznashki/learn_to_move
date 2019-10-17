@@ -19,13 +19,13 @@ best_ep_length = float('-inf')
 
 class SAC:
     def __init__(self, head_idx, observation_shape, action_shape, *,
-                    policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes, alpha, discount, tau, lr, learn_alpha=True):
+                    policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes, discount, n_step_returns, tau, lr, alpha, learn_alpha=True):
         print('Head initialized with: discount {:.4f}, lr {:.4f}, tau {:.4f}'.format(discount, lr, tau))
 
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, *action_shape], name='actions')
-        self.rewards_ph = tf.placeholder(tf.float32, [None, 1], name='rewards')
+        self.rewards_ph = tf.placeholder(tf.float32, [None, n_step_returns], name='rewards')
         self.dones_ph = tf.placeholder(tf.float32, [None, 1], name='dones')
         self.next_obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='next_obs')
 
@@ -46,8 +46,9 @@ class SAC:
 
         # 2. loss
         #   q value target
-        next_v = target_value_function(self.next_obs_ph) + value_function_prior(self.next_obs_ph)
-        target_q = self.rewards_ph + discount * next_v * (1 - self.dones_ph)
+        v_nth_value = target_value_function(self.next_obs_ph) + value_function_prior(self.next_obs_ph)
+        rewards = tf.reduce_sum(self.rewards_ph * discount**np.arange(n_step_returns), axis=1, keepdims=True)
+        target_q = rewards + discount**n_step_returns * v_nth_value * (1 - self.dones_ph)
         #   q values loss terms
         obs_actions = tf.concat([self.obs_ph, self.actions_ph], 1)
         q1_at_memory_action = q1(obs_actions) + q1_prior(obs_actions)
@@ -115,6 +116,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     batch_size = alg_args.pop('batch_size')
     n_heads = alg_args.pop('n_heads')
     head_horizon = alg_args.pop('head_horizon')
+    n_step_returns = alg_args.get('n_step_returns', 1)
     n_train_steps_per_env_step = alg_args.pop('n_train_steps_per_env_step', 1)
     global best_ep_length
 
@@ -133,7 +135,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     actor_head_idx = 0
 
     # set up agent
-    memory = EnsembleMemory(n_heads, int(max_memory_size), env.observation_space.shape, env.action_space.shape)
+    memory = EnsembleMemory(n_heads, int(max_memory_size), env.observation_space.shape, env.action_space.shape, n_step_returns)
     agent = BootstrappedAgent(SAC, n_heads, args=(env.observation_space.shape, env.action_space.shape), kwargs=alg_args)
 
     # initialize session, agent, saver
@@ -248,6 +250,7 @@ def defaults(env_name=None):
                 'n_prefill_steps': 1000,
                 'alpha': 0.2,
                 'learn_alpha': True,
+                'n_step_returns': 3,
                 'head_horizon': 5,
                 'n_heads': 5}
     else:  # mujoco
@@ -271,5 +274,6 @@ def defaults(env_name=None):
                 'n_prefill_steps': 1000,
                 'alpha': alpha,
                 'learn_alpha': True,
+                'n_step_returns': 3,
                 'head_horizon': 5,
                 'n_heads': 1}
