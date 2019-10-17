@@ -100,7 +100,7 @@ class SAC:
     def update_target_net(self):
         self.sess.run(self.target_update_ops)
 
-    def train(self, batch):
+    def train_step(self, batch):
         self.sess.run(self.train_ops, {self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
                                        self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
 
@@ -114,19 +114,23 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     n_prefill_steps = alg_args.pop('n_prefill_steps')
     batch_size = alg_args.pop('batch_size')
     n_heads = alg_args.pop('n_heads')
-    episode_length = alg_args.pop('episode_length', 1000)
+    head_horizon = alg_args.pop('head_horizon')
+    n_train_steps_per_env_step = alg_args.pop('n_train_steps_per_env_step', 1)
     global best_ep_length
 
     # setup tracking
     stats = {}
     episode_rewards = np.zeros((env.num_envs, 1), dtype=np.float32)
+    episode_aug_rew = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_bonus   = np.zeros((env.num_envs, 1), dtype=np.float32)
     episode_lengths = np.zeros((env.num_envs, 1), dtype=int)
     episode_rewards_history = deque(maxlen=100)
+    episode_aug_rew_history = deque(maxlen=100)
     episode_bonus_history   = deque(maxlen=100)
     episode_lengths_history = deque(maxlen=100)
     n_episodes = 0
-    t = 0
+    start_step = 1
+    actor_head_idx = 0
 
     # set up agent
     memory = EnsembleMemory(n_heads, int(max_memory_size), env.observation_space.shape, env.action_space.shape)
@@ -137,90 +141,91 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
     agent.initialize(sess)
     if exploration is not None: exploration.initialize(sess)
     # backward compatible to models that used mpi_adam -- ie only save and restore non-optimizer vars
-    if n_total_steps == 0:  # ie when not training
+    if n_total_steps == 0 and args.load_path is not None:
         vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
         restore_dict = {var.op.name: var for var in tf.global_variables() if var.op.name in vars_to_restore}
         saver = tf.train.Saver(restore_dict)
     else:
         saver = tf.train.Saver()  # keep track of all vars for training; only use non-optim vars for eval
-        best_saver = tf.train.Saver(max_to_keep=1)
+        best_saver = tf.train.Saver(max_to_keep=2)
     sess.graph.finalize()
     if args.load_path is not None:
         saver.restore(sess, args.load_path)
-        t = sess.run(tf.train.get_global_step())
-        env.anneal_step = t  # restore to resume annealing init pose to zero pose
+        start_step = sess.run(tf.train.get_global_step()) + 1
+        env.anneal_step = start_step  # annealing of init pose env
         print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
 
-    # init memory
-    memory.initialize(env, n_prefill_steps, training=(n_total_steps > 0), policy=agent if args.load_path else None)
+    # init memory and env for training
+    memory.initialize(env, n_prefill_steps // env.num_envs, training=(n_total_steps > 0), policy=agent if args.load_path else None)
+    obs = env.reset()
 
-    # divide n_total_steps of training into episodes of fixed length during which a single head acts but all heads train;
-    # select acting head uniformly at random
-    n_episodes = n_total_steps // episode_length
-    for e in range(n_episodes):
-        # select head
-        actor_head_idx = np.random.randint(0, n_heads)
-        # reset env and trackers
-        obs = env.reset()
-        episode_lengths *= 0
-        episode_rewards *= 0
+    for t in range(start_step, n_total_steps + start_step):
+        tic = time.time()
 
-        for i in range(episode_length):
-            tic = time.time()
+        # switch acting head every head_horizon number of steps; cf sec 5.3 in https://arxiv.org/pdf/1909.10618.pdf
+        if t % head_horizon == 0:
+            actor_head_idx = np.random.randint(n_heads)
 
-            # sample action -> step env -> store transition
-            actions = agent.get_actions(obs, actor_head_idx)
-            r_bonus = exploration.get_exploration_bonus(obs, actions) if exploration is not None else 0
-            next_obs, r, done, _ = env.step(actions)
-            done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
-            memory.store_transition(obs, actions, r + r_bonus, done_bool, next_obs)
-            obs = next_obs
+        # sample action -> step env -> store transition
+        actions = agent.get_actions(obs, actor_head_idx)  # (batch_size, action_dim)
+        actions = exploration.select_best_action(obs, actions) if exploration is not None else actions
+        next_obs, r, done, info = env.step(actions)
+        r_aug = np.vstack([i.get('rewards', 0) for i in info])
+        r_bonus = exploration.get_exploration_bonus(obs, actions, next_obs) if exploration is not None else 0
+        done_bool = np.where(episode_lengths + 1 == max_episode_length, np.zeros_like(done), done)  # only store true `done` in buffer not episode ends
+        memory.store_transition(obs, actions, r + r_bonus + r_aug, done_bool, next_obs)
+        obs = next_obs
 
-            # keep records
-            t += 1
-            episode_rewards += r
-            episode_bonus   += r_bonus
-            episode_lengths += 1
+        # keep records
+        episode_rewards += r
+        episode_aug_rew += r_aug
+        episode_bonus   += r_bonus
+        episode_lengths += 1
 
-            # end of episode -- when all envs are done or max_episode length is reached, reset
-            if any(done):
-                for d in np.nonzero(done)[0]:
-                    episode_rewards_history.append(float(episode_rewards[d]))
-                    episode_bonus_history.append(float(episode_bonus[d]))
-                    episode_lengths_history.append(int(episode_lengths[d]))
-                    n_episodes += 1
-                    # reset counters
-                    episode_rewards[d] = 0
-                    episode_bonus[d] = 0
-                    episode_lengths[d] = 0
+        # end of episode -- when all envs are done or max_episode length is reached, reset
+        if any(done):
+            for d in np.nonzero(done)[0]:
+                episode_rewards_history.append(float(episode_rewards[d]))
+                episode_aug_rew_history.append(float(episode_aug_rew[d]))
+                episode_bonus_history.append(float(episode_bonus[d]))
+                episode_lengths_history.append(int(episode_lengths[d]))
+                n_episodes += 1
+                # reset counters
+                episode_rewards[d] = 0
+                episode_aug_rew[d] = 0
+                episode_bonus[d] = 0
+                episode_lengths[d] = 0
 
-            # train
-            agent.train(memory, batch_size)
+        # train
+        for _ in range(n_train_steps_per_env_step):
+            agent.train_step(memory, batch_size)
             agent.update_target_net()
-            expl_loss = exploration.train(memory[actor_head_idx].sample()) if exploration is not None else 0
+        expl_loss = exploration.train(memory[actor_head_idx].sample()) if exploration is not None else 0
 
-            # save
-            if t % args.save_interval == 0:
-                saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
-                if best_ep_length < np.mean(episode_lengths_history):
-                    best_ep_length = np.mean(episode_lengths_history)
-                    best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
+        # save
+        if t % args.save_interval == 0:
+            saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
+            if best_ep_length <= np.mean(episode_lengths_history):
+                best_ep_length = np.mean(episode_lengths_history)
+                best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
 
-            # log stats
-            if t % args.log_interval == 0:
-                toc = time.time()
-                stats['timestep'] = t
-                stats['episodes'] = n_episodes
-                stats['steps_per_second'] = args.log_interval / (toc - tic)
-                stats['expl_loss'] = expl_loss
-                stats['avg_return'] = np.mean(episode_rewards_history)
-                stats['std_return'] = np.std(episode_rewards_history)
-                stats['avg_bonus'] = np.mean(episode_bonus_history)
-                stats['std_bonus'] = np.std(episode_bonus_history)
-                stats['avg_episode_length'] = np.mean(episode_lengths_history)
-                stats['std_episode_length'] = np.std(episode_lengths_history)
-                logger.save_csv(stats, args.output_dir + '/log.csv')
-                print(tabulate(stats.items(), tablefmt='rst'))
+        # log stats
+        if t % args.log_interval == 0:
+            toc = time.time()
+            stats['timestep'] = t
+            stats['episodes'] = n_episodes
+            stats['steps_per_second'] = args.log_interval / (toc - tic)
+            stats['expl_loss'] = expl_loss
+            stats['avg_return'] = np.mean(episode_rewards_history)
+            stats['std_return'] = np.std(episode_rewards_history)
+            stats['avg_aug_return'] = np.mean(episode_aug_rew_history)
+            stats['std_aug_return'] = np.std(episode_aug_rew_history)
+            stats['avg_bonus'] = np.mean(episode_bonus_history)
+            stats['std_bonus'] = np.std(episode_bonus_history)
+            stats['avg_episode_length'] = np.mean(episode_lengths_history)
+            stats['std_episode_length'] = np.std(episode_lengths_history)
+            logger.save_csv(stats, args.output_dir + '/log.csv')
+            print(tabulate(stats.items(), tablefmt='rst'))
 
     return agent
 
@@ -231,17 +236,19 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
 
 def defaults(env_name=None):
     if env_name == 'L2M2019':
-        return {'policy_hidden_sizes': (128, 128),
-                'value_hidden_sizes': (128, 128),
-                'q_hidden_sizes': (128, 128),
+        return {'policy_hidden_sizes': (256, 256),
+                'value_hidden_sizes': (256, 256),
+                'q_hidden_sizes': (256, 256),
                 'discount': 0.96,
                 'tau': 0.01,
                 'lr': 1e-3,
                 'batch_size': 256,
+                'n_train_steps_per_env_step': 1,
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': 1000,
                 'alpha': 0.2,
                 'learn_alpha': True,
+                'head_horizon': 5,
                 'n_heads': 5}
     else:  # mujoco
         alpha = {
@@ -259,8 +266,10 @@ def defaults(env_name=None):
                 'tau': 0.01,
                 'lr': 1e-3,
                 'batch_size': 256,
+                'n_train_steps_per_env_step': 1,
                 'max_memory_size': int(1e6),
                 'n_prefill_steps': 1000,
                 'alpha': alpha,
                 'learn_alpha': True,
+                'head_horizon': 5,
                 'n_heads': 1}

@@ -139,7 +139,7 @@ class DDPGMPI(DDPG):
     def get_action_value(self, obs, actions):
         return self.sess.run(self.q_value, {self.obs_ph: obs, self.actions_ph: actions})
 
-    def train(self, batch):
+    def train_step(self, batch):
         policy_grads, _, q_grads, _ = self.sess.run(self.train_ops,
                 feed_dict={self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
                            self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
@@ -241,7 +241,7 @@ def learn(env, exploration, seed, n_total_steps, max_episode_length, alg_args, a
                     episode_lengths[d] = 0
 
             # train
-            agent.train(memory, batch_size)
+            agent.train_step(memory, batch_size)
             agent.update_target_net()
             expl_loss = exploration.train(memory[actor_head_idx].sample()) if exploration is not None else 0
 

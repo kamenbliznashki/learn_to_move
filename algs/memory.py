@@ -62,7 +62,6 @@ class Memory:
         print('Memory initialized.')
 
 
-
 class EnsembleMemory:
     def __init__(self, n_heads, max_size, observation_shape, action_shape, dtype='float32'):
         self.heads = [Memory(max_size, observation_shape, action_shape, dtype) for _ in range(n_heads)]
@@ -79,6 +78,13 @@ class EnsembleMemory:
     def initialize(self, env, n_prefill_steps, training=True, policy=None):
         for i, head in enumerate(self.heads):  # call store_transition in each Memory class (ie no bootstrap)
             head.initialize(env, n_prefill_steps, training, policy[i] if policy is not None else None)
+
+
+class BootstrappedMemory(Memory):
+    def store_transition(self, obs, actions, rewards, dones, next_obs, training=True):
+        m = np.random.randint(2)  # double or nothing bootstrap
+        if m == 1:
+            super().store_transition(obs, actions, rewards, dones, next_obs, training)
 
 
 class SymmetricMemory(Memory):
