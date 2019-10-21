@@ -11,7 +11,7 @@ import tensorflow as tf
 from tabulate import tabulate
 
 from algs.memory import Memory, SymmetricMemory
-from algs.models import GaussianPolicy, Model
+from algs.models import Model, GaussianPolicy
 from algs.explore import SPEnsemble
 import logger
 
@@ -20,7 +20,7 @@ best_ep_length = float('-inf')
 class SAC:
     def __init__(self, observation_shape, action_shape, modeled_obs_idxs, *,
                     policy_hidden_sizes, student_policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes,
-                    alpha, discount, tau, lr, n_sample_actions, learn_alpha=True):
+                    alpha, discount, tau, lr, n_sample_actions, learn_alpha=True, loss_ord=1):
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, *action_shape], name='actions')
@@ -34,9 +34,9 @@ class SAC:
         target_value_function = Model('target_value_function', hidden_sizes=value_hidden_sizes, output_size=1)
         q1 = Model('q1', hidden_sizes=q_hidden_sizes, output_size=1)
         q2 = Model('q2', hidden_sizes=q_hidden_sizes, output_size=1)
-        policy = GaussianPolicy('policy', hidden_sizes=policy_hidden_sizes, output_size=2*action_shape[0],
+        policy = GaussianPolicy('policy', hidden_sizes=policy_hidden_sizes, output_size=action_shape[0],
                                 output_kernel_initializer='zeros', output_bias_initializer='zeros')
-        self.student_policy = GaussianPolicy('student_policy', hidden_sizes=student_policy_hidden_sizes, output_size=2*action_shape[0])
+        self.student_policy = GaussianPolicy('student_policy', hidden_sizes=student_policy_hidden_sizes, output_size=action_shape[0])
         if learn_alpha:
             beta = tf.Variable(tf.zeros(1), trainable=True, dtype=tf.float32, name='beta')
             alpha = tf.exp(beta)
@@ -50,8 +50,8 @@ class SAC:
         q1_at_memory_action = q1(obs_actions_ph)
         q2_at_memory_action = q2(obs_actions_ph)
         self.q_at_memory_action = tf.minimum(q1_at_memory_action, q2_at_memory_action)
-        q1_loss = tf.losses.mean_squared_error(q1_at_memory_action, target_q)
-        q2_loss = tf.losses.mean_squared_error(q2_at_memory_action, target_q)
+        q1_loss = tf.reduce_mean(tf.norm(q1_at_memory_action - target_q, axis=1, ord=loss_ord), axis=0)
+        q2_loss = tf.reduce_mean(tf.norm(q2_at_memory_action - target_q, axis=1, ord=loss_ord), axis=0)
         #   policy loss term
         actions, log_pis = policy(self.obs_ph)  # (n_samples, batch_size, action_dim) and (...,1)
         actions, log_pis = tf.squeeze(actions, 0), tf.squeeze(log_pis, 0)
@@ -61,7 +61,7 @@ class SAC:
         #   value function loss term
         v = value_function(self.obs_ph)
         target_v = q_at_policy_action - alpha * log_pis
-        v_loss = tf.losses.mean_squared_error(v, target_v)
+        v_loss = tf.reduce_mean(tf.norm(v - target_v, axis=1, ord=loss_ord), axis=0)
         #   alpha loss term
         if learn_alpha:
             target_entropy = - 1 * np.sum(action_shape)
@@ -254,7 +254,8 @@ def defaults(env_name=None):
                 'n_prefill_steps': 1000,
                 'alpha': 0.2,
                 'learn_alpha': True,
-                'n_sample_actions': 32}
+                'n_sample_actions': 32,
+                'loss_ord': 1}
     else:  # mujoco
         alpha = {
             'Ant-v2': 0.1,
@@ -276,4 +277,5 @@ def defaults(env_name=None):
                 'n_prefill_steps': 1000,
                 'alpha': alpha,
                 'learn_alpha': True,
-                'n_sample_actions': 32}
+                'n_sample_actions': 32,
+                'loss_ord': 1}

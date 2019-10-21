@@ -35,6 +35,10 @@ class Model:
 
 
 class GaussianPolicy(Model):
+    def __init__(self, *args, **kwargs):
+        output_size = kwargs.pop('output_size')
+        super().__init__(*args, output_size=2*output_size, **kwargs)
+
     def __call__(self, obs, n_samples=1):
         with tf.variable_scope(self.name, reuse=tf.AUTO_REUSE):
             x = self.network(obs)
@@ -56,7 +60,7 @@ class GaussianPolicy(Model):
 # --------------------
 
 class FlowPolicy(tf.keras.Model):
-    def __init__(self, name, hidden_sizes, output_size, activation=None):
+    def __init__(self, name, hidden_sizes, output_size, activation=None, **kwargs):
         super().__init__()
         self.output_size = output_size
 
@@ -65,11 +69,12 @@ class FlowPolicy(tf.keras.Model):
                                                   scale=tf.ones([output_size], tf.float32))
 
         # affine transform of state to condition the flow
-        self.affine = tf.keras.layers.Dense(2*output_size, kernel_initializer='zeros', bias_initializer='zeros')
-        self.tanh = Tanh()
+#        self.affine = tf.keras.layers.Dense(2*output_size, kernel_initializer='zeros', bias_initializer='zeros')
+        self.affine = Model('base', hidden_sizes=hidden_sizes, output_size=2*output_size, **kwargs)
 
         # normalizing flow on top of the base distribution
-        self.flow = BNAF(hidden_sizes, output_size)
+#        self.flow = BNAF(hidden_sizes, output_size)
+        self.flow = BNAF([4*output_size for _ in range(2)], output_size)
 
     def call(self, obs, n_samples=1):
         # sample actions from base distribution
@@ -80,12 +85,12 @@ class FlowPolicy(tf.keras.Model):
         logstd = tf.clip_by_value(logstd, -20, 2)
         actions = mu[None,...] + tf.exp(logstd)[None,...] * raw_actions
         actions = tf.reshape(actions, [-1, self.output_size])
-        actions, sum_logdet = self.tanh(actions)
+#        actions, sum_logdet = self.tanh((actions, logstd))
 
         # apply flow
-        actions, logdet = self.flow(actions)
-        sum_logdet += logdet + logstd
-        logprob = tf.reduce_sum(self.base_dist.log_prob(actions) - logdet, 1)
+        actions, sum_logdet = self.flow(actions)
+        sum_logdet += logstd
+        logprob = tf.reduce_sum(self.base_dist.log_prob(actions) - sum_logdet, 1)
 
         # reshape to (n_samples, B, action_dim)
         actions = tf.reshape(actions, [n_samples, -1, self.output_size])
@@ -93,8 +98,12 @@ class FlowPolicy(tf.keras.Model):
         return actions, logprob # (n_samples, B, action_dim) and (n_samples, B, 1)
 
     @property
+    def flow_trainable_vars(self):
+        return self.flow.trainable_variables
+
+    @property
     def trainable_vars(self):
-        return self.trainable_variables
+        return self.affine.trainable_vars
 
 # --------------------
 # BNAF implementation

@@ -153,13 +153,16 @@ class Obs2VecEnv(gym.Wrapper):
         return self.obs2vec(self.env.create())
 
 class RandomPoseInitEnv(gym.Wrapper):
-    def __init__(self, env=None, anneal_start_step=50000, anneal_end_step=100000, rand_pose_prob=0.1, **kwargs):
+    def __init__(self, env=None, anneal_start_step=1000, anneal_end_step=2000, **kwargs):
+        # if avg episode length starts at 20 steps then annealing begins after about 20k model steps; 
+        #   if episode length goes to 100 steps in between resets;
+        #   then by 2k resets we'll be between 20*2k=40k and 100*2k=200k model steps
+        # on training restart from a loaded model, annealing restarts (this leads to some instability when loading a model)
         super().__init__(env)
         # anneal pose to zero-pose
         self.anneal_start_step = anneal_start_step
         self.anneal_end_step = anneal_end_step
         self.anneal_step = 0
-        self.rand_pose_prob = rand_pose_prob  # % of time starting with a random init pose
 
     def reset(self, **kwargs):
         seed = kwargs.get('seed', None)
@@ -228,16 +231,16 @@ class NoopResetEnv(gym.Wrapper):
 
 class ActionAugEnv(gym.Wrapper):
     """ transform action from tanh policies in (-1,1) to (0,1) """
-    def __init__(self, env, **kwargs):
-        super().__init__(env)
-        action_dim = self.env.action_space.shape[0] - 2
-        # policy actions in [-1,1]
-        self.env.action_space = gym.spaces.Box(-1 * np.ones(action_dim), np.ones(action_dim))
+#    def __init__(self, env, **kwargs):
+#        super().__init__(env)
+#        action_dim = self.env.action_space.shape[0] - 2
+#        # policy actions in [-1,1]
+#        self.env.action_space = gym.spaces.Box(-1 * np.ones(action_dim), np.ones(action_dim))
 
     def step(self, action):
-        # input in [-1,1], output in [0,1]
-        # zero out L/R hip adductors -- let's see if it prevents leg crossing / is necessery to talk
-        action = np.insert(action, [1, 12], -1)  # insert -1 in positions 1 and 12 ie output is (22,) and pos 1 and 12 are -1 (the hip adductors are inactive)
+#        # input in [-1,1], output in [0,1]
+#        # zero out L/R hip adductors -- let's see if it prevents leg crossing / is necessery to talk
+#        action = np.insert(action, [1, 12], -1)  # insert -1 in positions 1 and 12 ie output is (22,) and pos 1 and 12 are -1 (the hip adductors are inactive)
         return self.env.step((action + 1)/2)
 
 class PoolVTgtEnv(gym.Wrapper):
@@ -310,7 +313,7 @@ class RewardAugEnv(gym.Wrapper):
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 
         # velocity -- reward dx; penalize dy and dz
-        rewards['dx'] = where(x_vtgt_onehot == 1, 2 * tanh(dx), 2 * (1 - tanh(5*dx)**2))
+        rewards['dx'] = where(x_vtgt_onehot == 1, 3 * tanh(dx), 2 * (1 - tanh(5*dx)**2))
         rewards['dy'] = - 2 * tanh(2*dy)**2
 #        rewards['dz'] = - np.tanh(dz)**2
 
@@ -325,12 +328,14 @@ class RewardAugEnv(gym.Wrapper):
         return rewards
 
     def step(self, action):
+        yaw_old = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
+
         o, r, d, i = self.env.step(action)
 
         # extract data
         x_vtgt_onehot, y_vtgt_onehot, goal_dist = np.split(o['v_tgt_field'], [1, self.v_tgt_field_size - 1], axis=-1)  # split to produce 3 arrays of shape (n,), (n,) and (1,)  where n is half the pooled v_tgt_field
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
-        yaw = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
+        yaw_new = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
         lf, ll, lu = o['l_leg']['ground_reaction_forces']
         # convert to array for compute_rewards fn
@@ -341,13 +346,14 @@ class RewardAugEnv(gym.Wrapper):
         # compute rewards
         rewards = self.compute_rewards(x_vtgt_onehot, goal_dist, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
 
-        # turning -- reward turning towards the v_tgt_field sink
-        yaw_tgt = np.array([0.78, 0, -0.78]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
-        yaw_tgt += yaw  # yaw target is relative to current yaw
-        rewards['yaw_tgt'] = 2 * (1 - np.tanh(2*(yaw - yaw_tgt))**2)
+        # turning -- reward turning towards the v_tgt_field sink;
+        # yaw target is relative to current yaw; so reward if the change in yaw is in the direction and magnitude of the tgt
+        delta_yaw = yaw_new - yaw_old
+        yaw_tgt = 0.025 * np.array([1, 0, -1]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
+        rewards['yaw_tgt'] = 2 * (1 - np.tanh(100*(delta_yaw - yaw_tgt))**2)
 
 #        print('grf ll: {:.3f}; grf rl: {:.3f}'.format(ll, rl))
-#        print('yaw: ', np.round(yaw, 3), '; yaw_tgt: ', np.round(yaw_tgt, 3))
+#        print('delta_yaw: ', np.round(delta_yaw, 3), '; yaw_tgt: ', np.round(yaw_tgt, 3))
 #        print('dx_tgt: ', dx_tgt, '; y_vtgt: ', y_vtgt_onehot)
 #        print('Augmented rewards:\n {}'.format(tabulate.tabulate(rewards.items())))
         i['rewards'] = float(sum(rewards.values()))
@@ -675,8 +681,10 @@ class SubprocVecEnv(VecEnv):
     def close_extras(self):
         self.closed = True
         if self.waiting:
-            for remote in self.remotes:
-                remote.recv()
+            try:
+                results = [remote.recv() for remote in self.remotes]
+            except EOFError:  # nothing to receive / closed by garbage collection
+                pass
         for remote in self.remotes:
             remote.send(('close', None))
         for p in self.ps:
