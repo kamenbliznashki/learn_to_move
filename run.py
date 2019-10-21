@@ -64,7 +64,7 @@ def get_alg_config(alg, env, extra_args=None):
 def get_env_config(env, extra_args=None):
     env_args = None
     if env == 'L2M2019':
-        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 2, 'stepsize': 0.01}
+        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 3, 'stepsize': 0.01}
     if extra_args is not None and env_args is not None:
         env_args.update({k: v for k, v in extra_args.items() if k in env_args})
     return env_args
