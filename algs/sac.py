@@ -10,17 +10,17 @@ import numpy as np
 import tensorflow as tf
 from tabulate import tabulate
 
-from algs.memory import Memory, SymmetricMemory
 from algs.models import Model, GaussianPolicy
 from algs.explore import SPEnsemble
+from algs.memory import Memory, SymmetricMemory, compute_mirrored_actions, compute_mirrored_obs
 import logger
 
 best_ep_length = float('-inf')
 
 class SAC:
-    def __init__(self, observation_shape, action_shape, modeled_obs_idxs, *,
+    def __init__(self, observation_shape, action_shape, modeled_obs_idxs, v_tgt_field_size, *,
                     policy_hidden_sizes, student_policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes,
-                    alpha, discount, tau, lr, n_sample_actions, learn_alpha=True, loss_ord=1):
+                    alpha, discount, tau, lr, n_sample_actions, learn_alpha=True, loss_ord=1, sym_loss_weigth=1):
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, *action_shape], name='actions')
@@ -57,7 +57,10 @@ class SAC:
         actions, log_pis = tf.squeeze(actions, 0), tf.squeeze(log_pis, 0)
         obs_policy_actions = tf.concat([self.obs_ph, actions], 1)
         q_at_policy_action = tf.minimum(q1(obs_policy_actions), q2(obs_policy_actions))
-        policy_loss = tf.reduce_mean(alpha * log_pis - q_at_policy_action)
+        symmetry_actions = policy(compute_mirrored_obs(self.obs_ph, v_tgt_field_size))[0]
+        symmetry_actions = tf.squeeze(symmetry_actions, 0)
+        symmetry_loss = tf.reduce_mean(tf.norm(actions - compute_mirrored_actions(symmetry_actions), axis=1, ord=2), axis=0)
+        policy_loss = tf.reduce_mean(alpha * log_pis - q_at_policy_action) + sym_loss_weigth * symmetry_loss
         #   value function loss term
         v = value_function(self.obs_ph)
         target_v = q_at_policy_action - alpha * log_pis
@@ -141,7 +144,7 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
 
     # set up agent
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
-    agent = SAC(env.observation_space.shape, env.action_space.shape, spmodel.idxs, **alg_args)
+    agent = SAC(env.observation_space.shape, env.action_space.shape, spmodel.idxs, env.v_tgt_field_size, **alg_args)
 
     # initialize session, agent, saver
     sess = tf.get_default_session()
@@ -161,7 +164,7 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
     if args.load_path is not None:
         saver.restore(sess, args.load_path)
         start_step = sess.run(tf.train.get_global_step()) + 1
-        env.anneal_step = start_step  # annealing of init pose env
+        #env.anneal_step = start_step  # annealing of init pose env
         print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
 
     # init memory and env for training
@@ -255,7 +258,8 @@ def defaults(env_name=None):
                 'alpha': 0.2,
                 'learn_alpha': True,
                 'n_sample_actions': 32,
-                'loss_ord': 1}
+                'loss_ord': 1,
+                'sym_loss_weigth': 1}
     else:  # mujoco
         alpha = {
             'Ant-v2': 0.1,
@@ -278,4 +282,5 @@ def defaults(env_name=None):
                 'alpha': alpha,
                 'learn_alpha': True,
                 'n_sample_actions': 32,
-                'loss_ord': 1}
+                'loss_ord': 1,
+                'sym_loss_weigth': 1}

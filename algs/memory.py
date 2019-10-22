@@ -1,5 +1,6 @@
 from collections import namedtuple
 import numpy as np
+import tensorflow as tf
 
 
 Transition = namedtuple('Transition', ['obs', 'actions', 'rewards', 'dones', 'next_obs'])
@@ -61,6 +62,33 @@ class Memory:
             self.current_obs = next_obs
 
         print('Memory initialized.')
+
+
+def compute_mirrored_actions(actions):
+    actions_dim = actions.shape[1]
+    return tf.reshape(tf.reverse(tf.reshape(actions, [-1, 2, actions_dim//2]), axis=[1]), [-1, actions_dim])
+
+def compute_mirrored_obs(obs, v_tgt_field_size):
+    obs_dim = obs.shape[1] - v_tgt_field_size
+
+    # body obs start after v tgt field; pelvis is first 9 components of body obs
+    vtgt_obs, body_obs = tf.split(obs, [v_tgt_field_size, -1], axis=-1)
+    pelvis_obs, leg_obs = tf.split(body_obs, [9, -1], axis=-1)
+
+    #   flip legs
+    leg_obs = tf.reshape(tf.reverse(tf.reshape(leg_obs, [-1, 2, (obs_dim - 9)//2]), axis=[1]), [-1, obs_dim - 9])
+
+    #   3. flip sign of pelvis roll (right->left), y-velocity, roll, yaw
+    mask = tf.tensor_scatter_nd_update(tf.ones([pelvis_obs.shape[1]]), [[2], [4], [7], [8]], -1 * tf.ones([4]))
+    pelvis_obs *= mask
+
+    #   4. flip v tgt (NOTE sync with PoolVtgt for output of the v tgt field)
+    x_vtgt_onehot, y_vtgt_onehot, goal_dist = tf.split(vtgt_obs, [(v_tgt_field_size - 1)//2, (v_tgt_field_size - 1)//2, 1], axis=-1)
+    y_vtgt_onehot = tf.reverse(y_vtgt_onehot, axis=[1])
+
+    # join all flipped elements into mirrored obs
+    return tf.concat([x_vtgt_onehot, y_vtgt_onehot, goal_dist, pelvis_obs, leg_obs], axis=1)
+
 
 class SymmetricMemory(Memory):
 

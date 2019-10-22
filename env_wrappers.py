@@ -153,7 +153,7 @@ class Obs2VecEnv(gym.Wrapper):
         return self.obs2vec(self.env.create())
 
 class RandomPoseInitEnv(gym.Wrapper):
-    def __init__(self, env=None, anneal_start_step=1000, anneal_end_step=2000, **kwargs):
+    def __init__(self, env=None, anneal_start_step=2000, anneal_end_step=5000, **kwargs):
         # if avg episode length starts at 20 steps then annealing begins after about 20k model steps; 
         #   if episode length goes to 100 steps in between resets;
         #   then by 2k resets we'll be between 20*2k=40k and 100*2k=200k model steps
@@ -247,7 +247,7 @@ class PoolVTgtEnv(gym.Wrapper):
     def __init__(self, env=None, **kwargs):
         super().__init__(env)
         # v_tgt_field pooling; output size = pooled_vtgt + scale of x vel
-        self.v_tgt_field_size = 4   # v_tgt_field pooled size for x and y
+        self.v_tgt_field_size = 6   # v_tgt_field pooled size for x and y
         self.v_tgt_field_size += 1  # distance to vtgt sink
         # adjust env reference dims
         obs_dim = env.observation_space.shape[0] - 2*11*11 + self.v_tgt_field_size
@@ -259,17 +259,19 @@ class PoolVTgtEnv(gym.Wrapper):
         # pool v_tgt_field to (3,3)
         pooled_vtgt = vtgt.reshape(2,11,11)[:,::2,::2].reshape(2,3,2,3,2).mean((2,4))
         # pool each coordinate
-        x_vtgt = pooled_vtgt[0].mean(0)  # pool dx over y coord
+        x_vtgt = np.abs(pooled_vtgt[0].mean(0))  # pool dx over y coord and return one hot indicator of the argmin
         y_vtgt = np.abs(pooled_vtgt[1].mean(1))  # pool dy over x coord and return one hot indicator of the argmin
+        # x forward direction to target = [behind, here, ahead]
+        x_vtgt_onehot = np.zeros_like(x_vtgt)
+        x_vtgt_argsort = x_vtgt.argsort()
+        x_vtgt_onehot[x_vtgt_argsort[0]] = 1
         # y turning direction (yaw tgt) = [left, straight, right]
         y_vtgt_onehot = np.zeros_like(y_vtgt)
         y_vtgt_argsort = y_vtgt.argsort()
-        # if target is behind (x_vtgt is negative and y_vtgt is [0, 1, 0] ie argmin is 1, then choose second to argmin to force turn
+        #   if target is behind (x_vtgt is negative and y_vtgt is [0, 1, 0] ie argmin is 1, then choose second to argmin to force turn
         y_vtgt_onehot[y_vtgt_argsort[1] if (y_vtgt[1] < 1 and y_vtgt_argsort[0] == 1) else y_vtgt_argsort[0]] = 1
         # distance to vtgt sink
         goal_dist = np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2)
-        # x speed tgt = [stop, go]
-        x_vtgt_onehot = (goal_dist > 0.3)
 #        print('dx {:.2f}; dy {:.2f}; dxdy {:.2f}; dx_tgt {:.2f}'.format(
 #            x_vtgt[1], y_vtgt[1], np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2), dx_tgt))
         obs['v_tgt_field'] = np.hstack([x_vtgt_onehot, y_vtgt_onehot, goal_dist])
@@ -300,7 +302,8 @@ class RewardAugEnv(gym.Wrapper):
         tanh = tf.math.tanh if is_tf else np.tanh
         where = tf.where if is_tf else np.where
         ones_like = tf.ones_like if is_tf else np.ones_like
-        abs_ = tf.math.abs if is_tf else np.abs
+        concat = tf.concat if is_tf else np.concatenate
+        sum_ = tf.reduce_sum if is_tf else np.sum
 
         rewards = {}
 
@@ -313,7 +316,11 @@ class RewardAugEnv(gym.Wrapper):
         rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
 
         # velocity -- reward dx; penalize dy and dz
-        rewards['dx'] = where(x_vtgt_onehot == 1, 3 * tanh(dx), 2 * (1 - tanh(5*dx)**2))
+        #   x_vtgt_onehot shows x vtgt [behind, here, ahead]
+        #   rewards are [reward 0 dx w smaller magnitude than yaw target to incent turning, reward 0 dx to stop, reward (+) to move forward]
+        dx_reward_weights = concat([1 - tanh(5*dx)**2, 2 * (1 - tanh(5*dx)**2), 3 * tanh(dx)], axis=-1)
+        rewards['dx'] = sum_(dx_reward_weights * x_vtgt_onehot, axis=-1, keepdims=True)
+#        rewards['dx'] = np.where(x_vtgt_onehot == 1, 3 * np.tanh(dx), 2 * (1 - np.tanh(5*dx)**2))
         rewards['dy'] = - 2 * tanh(2*dy)**2
 #        rewards['dz'] = - np.tanh(dz)**2
 
@@ -333,7 +340,8 @@ class RewardAugEnv(gym.Wrapper):
         o, r, d, i = self.env.step(action)
 
         # extract data
-        x_vtgt_onehot, y_vtgt_onehot, goal_dist = np.split(o['v_tgt_field'], [1, self.v_tgt_field_size - 1], axis=-1)  # split to produce 3 arrays of shape (n,), (n,) and (1,)  where n is half the pooled v_tgt_field
+        x_vtgt_onehot, y_vtgt_onehot, goal_dist = np.split(
+                o['v_tgt_field'], [(self.v_tgt_field_size - 1)//2, self.v_tgt_field_size - 1], axis=-1)  # split to produce 3 arrays of shape (n,), (n,) and (1,)  where n is half the pooled v_tgt_field
         height, pitch, roll, [dx, dy, dz, dpitch, droll, dyaw] = o['pelvis'].values()
         yaw_new = self.get_state_desc()['joint_pos']['ground_pelvis'][2]
         rf, rl, ru = o['r_leg']['ground_reaction_forces']
@@ -341,7 +349,7 @@ class RewardAugEnv(gym.Wrapper):
         # convert to array for compute_rewards fn
         goal_dist = np.asarray(goal_dist)
         height = np.asarray(height)
-        dx = np.asarray(dx)
+        dx = np.atleast_1d(dx)
 
         # compute rewards
         rewards = self.compute_rewards(x_vtgt_onehot, goal_dist, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu)
@@ -486,10 +494,11 @@ class VecEnv(ABC):
     """
     closed = False
 
-    def __init__(self, num_envs, observation_space, action_space):
+    def __init__(self, num_envs, observation_space, action_space, v_tgt_field_size):
         self.num_envs = num_envs
         self.observation_space = observation_space
         self.action_space = action_space
+        self.v_tgt_field_size = v_tgt_field_size
 
     @abstractmethod
     def reset(self):
@@ -548,7 +557,7 @@ class DummyVecEnv(VecEnv):
         """
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
-        VecEnv.__init__(self, len(env_fns), env.observation_space, env.action_space)
+        VecEnv.__init__(self, len(env_fns), env.observation_space, env.action_space, getattr(env, 'v_tgt_field_size', 0))
 
         self.buf_obs   = np.zeros((self.num_envs,) + env.observation_space.shape, dtype=np.float32)
         self.buf_dones = np.zeros((self.num_envs, 1), dtype=np.bool)
@@ -594,7 +603,7 @@ def worker(remote, parent_remote, env_fn_wrapper):
                 remote.close()
                 break
             elif cmd == 'get_spaces_spec':
-                remote.send((env.observation_space, env.action_space, env.spec))
+                remote.send((env.observation_space, env.action_space, getattr(env, 'v_tgt_field_size', 0), env.spec))
             else:
                 raise NotImplementedError
     except KeyboardInterrupt:
@@ -656,8 +665,8 @@ class SubprocVecEnv(VecEnv):
             remote.close()
 
         self.remotes[0].send(('get_spaces_spec', None))
-        observation_space, action_space, self.spec = self.remotes[0].recv()
-        VecEnv.__init__(self, len(env_fns), observation_space, action_space)
+        observation_space, action_space, v_tgt_field_size, self.spec = self.remotes[0].recv()
+        VecEnv.__init__(self, len(env_fns), observation_space, action_space, v_tgt_field_size)
 
     def step_async(self, actions):
         self._assert_not_closed()
@@ -685,8 +694,11 @@ class SubprocVecEnv(VecEnv):
                 results = [remote.recv() for remote in self.remotes]
             except EOFError:  # nothing to receive / closed by garbage collection
                 pass
-        for remote in self.remotes:
-            remote.send(('close', None))
+        try:
+            for remote in self.remotes:
+                remote.send(('close', None))
+        except BrokenPipeError:  # already closed by garbage collection
+            pass
         for p in self.ps:
             p.join()
 
