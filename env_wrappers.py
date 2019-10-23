@@ -152,7 +152,7 @@ class Obs2VecEnv(gym.Wrapper):
     def create(self):
         return self.obs2vec(self.env.create())
 
-class RandomPoseInitEnv(gym.Wrapper):
+class RandomInitEnv(gym.Wrapper):
     def __init__(self, env=None, anneal_start_step=2000, anneal_end_step=5000, **kwargs):
         # if avg episode length starts at 20 steps then annealing begins after about 20k model steps; 
         #   if episode length goes to 100 steps in between resets;
@@ -165,7 +165,7 @@ class RandomPoseInitEnv(gym.Wrapper):
         self.anneal_step = 0
 
     def reset(self, **kwargs):
-        seed = kwargs.get('seed', None)
+        seed = kwargs.pop('seed', None)
         if seed is not None:
             state = np.random.get_state()
             np.random.seed(seed)
@@ -212,7 +212,11 @@ class RandomPoseInitEnv(gym.Wrapper):
         if seed is not None:
             np.random.set_state(state)
 
-        return self.env.reset(init_pose=pose, **kwargs)
+        # vtgt sink init seed
+        if seed is None:
+            seed = np.random.randint(5)   # NOTE match to variants in envs/target/vtgtfield
+
+        return self.env.reset(init_pose=pose, seed=seed, **kwargs)
 
 class NoopResetEnv(gym.Wrapper):
     def __init__(self, env=None, noop_max=8):
@@ -272,8 +276,7 @@ class PoolVTgtEnv(gym.Wrapper):
         y_vtgt_onehot[y_vtgt_argsort[1] if (y_vtgt[1] < 1 and y_vtgt_argsort[0] == 1) else y_vtgt_argsort[0]] = 1
         # distance to vtgt sink
         goal_dist = np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2)
-#        print('dx {:.2f}; dy {:.2f}; dxdy {:.2f}; dx_tgt {:.2f}'.format(
-#            x_vtgt[1], y_vtgt[1], np.sqrt(x_vtgt[1]**2 + y_vtgt[1]**2), dx_tgt))
+#        print('pooling -- x {}; y {}; goal {:.2f}'.format(x_vtgt_onehot, y_vtgt_onehot, goal_dist))
         obs['v_tgt_field'] = np.hstack([x_vtgt_onehot, y_vtgt_onehot, goal_dist])
         return obs
 
@@ -318,7 +321,7 @@ class RewardAugEnv(gym.Wrapper):
         # velocity -- reward dx; penalize dy and dz
         #   x_vtgt_onehot shows x vtgt [behind, here, ahead]
         #   rewards are [reward 0 dx w smaller magnitude than yaw target to incent turning, reward 0 dx to stop, reward (+) to move forward]
-        dx_reward_weights = concat([1 - tanh(5*dx)**2, 2 * (1 - tanh(5*dx)**2), 3 * tanh(dx)], axis=-1)
+        dx_reward_weights = concat([1 - tanh(5*dx)**2, 2 * (1 - tanh(5*dx)**2), 2 * tanh(dx)], axis=-1)
         rewards['dx'] = sum_(dx_reward_weights * x_vtgt_onehot, axis=-1, keepdims=True)
 #        rewards['dx'] = np.where(x_vtgt_onehot == 1, 3 * np.tanh(dx), 2 * (1 - np.tanh(5*dx)**2))
         rewards['dy'] = - 2 * tanh(2*dy)**2
@@ -357,8 +360,8 @@ class RewardAugEnv(gym.Wrapper):
         # turning -- reward turning towards the v_tgt_field sink;
         # yaw target is relative to current yaw; so reward if the change in yaw is in the direction and magnitude of the tgt
         delta_yaw = yaw_new - yaw_old
-        yaw_tgt = 0.025 * np.array([1, 0, -1]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
-        rewards['yaw_tgt'] = 2 * (1 - np.tanh(100*(delta_yaw - yaw_tgt))**2)
+        yaw_tgt = 0.01 * np.array([1, 0, -1]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
+        rewards['yaw_tgt'] = 1 * (1 - np.tanh(10*(delta_yaw - yaw_tgt))**2)
 
 #        print('grf ll: {:.3f}; grf rl: {:.3f}'.format(ll, rl))
 #        print('delta_yaw: ', np.round(delta_yaw, 3), '; yaw_tgt: ', np.round(yaw_tgt, 3))
