@@ -30,7 +30,6 @@ parser.add_argument('--exp_name', default='exp', type=str)
 # training params
 parser.add_argument('--n_env', default=1, type=int, help='Number of environments in parallel.')
 parser.add_argument('--n_total_steps', default=0, type=int, help='Number of training steps on single or vectorized environment.')
-parser.add_argument('--max_episode_length', default=1000, type=int, help='Reset episode after reaching max length.')
 # logging
 parser.add_argument('--load_path', type=str)
 parser.add_argument('--output_dir', type=str)
@@ -64,7 +63,10 @@ def get_alg_config(alg, env, extra_args=None):
 def get_env_config(env, extra_args=None):
     env_args = None
     if env == 'L2M2019':
-        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'difficulty': 3, 'stepsize': 0.01}
+        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'stepsize': 0.01,
+                    'difficulty': 3, 'timestep_limit': 2500}
+    else:
+        env_args = {'max_episode_length': 1000}
     if extra_args is not None and env_args is not None:
         env_args.update({k: v for k, v in extra_args.items() if k in env_args})
     return env_args
@@ -95,16 +97,17 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
         env = L2M2019EnvBaseWrapper(**env_args)
         env = RandomInitEnv(env)
         env = ActionAugEnv(env)
-        env = PoolVTgtEnv(env, **env_args)
+        env = PoolVTgtEnv(env)
         env = RewardAugEnv(env)
         env = SkipEnv(env)
         env = Obs2VecEnv(env)
 
-        args.max_episode_length = env.time_limit / env.n_skips
+        env_args['max_episode_length'] = env.timestep_limit // env.n_skips
     else:
         import gym
         env = gym.envs.make(env_name)
         env.seed(seed + subrank if seed is not None else None)
+
 
     # apply wrappers
     env = Monitor(env, os.path.join(output_dir, str(mpi_rank) + '.' + str(subrank)))
@@ -169,7 +172,7 @@ def main(args, extra_args):
 
     # build and train agent
     learn = getattr(import_module('algs.' + args.alg), 'learn')
-    agent = learn(env, spmodel, args.seed, args.n_total_steps, args.max_episode_length, alg_args, args)
+    agent = learn(env, spmodel, args.seed, args.n_total_steps, env_args['max_episode_length'], alg_args, args)
 
     if args.play:
         if env_args: env_args['visualize'] = True

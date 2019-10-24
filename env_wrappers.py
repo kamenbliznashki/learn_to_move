@@ -19,7 +19,12 @@ from osim.env import L2M2019Env
 
 class L2M2019EnvBaseWrapper(L2M2019Env):
     """ Wrapper to move certain class variable to instance variables """
-    def __init__(self, **kwargs):
+    def __init__(self, anneal_start=3000, **kwargs):
+        self.anneal_start = anneal_start
+        self.anneal_step = 0
+        self.init_timestep_limit = kwargs.pop('timestep_limit', 2500)
+        self.timestep_limit = self.init_timestep_limit
+
         self._model = kwargs.pop('model', '3D')
         stepsize = kwargs.pop('stepsize', 0.01)
         self._visualize = kwargs.get('visualize', False)
@@ -36,12 +41,6 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
     @model.setter
     def model(self, model):
         self._model = model
-
-    def change_model(self, model):
-        # overwrite method so as to remove arguments `difficulty` and `seed` in the parent change_model method
-        if self.model != model:
-            self.model = model
-            self.load_model(self.model_paths[self.get_model_key()])
 
     @property
     def osim_model(self):
@@ -62,9 +61,16 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
 
     # match evaluation env
     def step(self, action):
-        return super().step(action, project=True, obs_as_dict=True)
+        o, r, d, i = super().step(action, project=True, obs_as_dict=True)
+        d = d or (self.osim_model.istep >= self.timestep_limit)
+        return o, r, d, i
 
     def reset(self, **kwargs):
+        # slowly anneal max episode length
+        #   eg. anneal step 187500 / anneal start 3000 = 62.5 * init_timestep_limit 40 = 2500
+        self.anneal_step += 1
+        self.timestep_limit = max(self.anneal_step / self.anneal_start * self.init_timestep_limit, 2500)
+
         obs_as_dict = kwargs.pop('obs_as_dict', True)
         return super().reset(obs_as_dict=obs_as_dict, **kwargs)
 
@@ -153,7 +159,7 @@ class Obs2VecEnv(gym.Wrapper):
         return self.obs2vec(self.env.create())
 
 class RandomInitEnv(gym.Wrapper):
-    def __init__(self, env=None, anneal_start_step=2000, anneal_end_step=5000, **kwargs):
+    def __init__(self, env=None, anneal_start_step=10000, anneal_end_step=40000, **kwargs):
         # if avg episode length starts at 20 steps then annealing begins after about 20k model steps; 
         #   if episode length goes to 100 steps in between resets;
         #   then by 2k resets we'll be between 20*2k=40k and 100*2k=200k model steps
@@ -168,7 +174,7 @@ class RandomInitEnv(gym.Wrapper):
         seed = kwargs.pop('seed', None)
         if seed is not None:
             state = np.random.get_state()
-            np.random.seed(seed)
+            np.random.seed(seed + np.random.randint(1e6))  #  keep the init pose random
 
         # construct random pose
         #  init pose vector is:
@@ -312,7 +318,7 @@ class RewardAugEnv(gym.Wrapper):
 
         # goals -- v_tgt_field sink
         rewards['vtgt_dist'] = clip(tanh(1 / clip(goal_dist, 0.1, float('inf')) - 0.5), 0, float('inf'))  # e.g. [0. , 0.165, 0.462, 0.905, 0.999] for goal dist [2. , 1.5, 1. , 0.5, 0.1]
-        rewards['vtgt_goal'] = where(goal_dist < 0.3, 5 * ones_like(goal_dist), 0 * ones_like(goal_dist))
+        rewards['vtgt_goal'] = where(goal_dist < 0.3, 1 * ones_like(goal_dist), 0 * ones_like(goal_dist))
 
         # stability -- penalize pitch and roll
         rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
@@ -360,7 +366,7 @@ class RewardAugEnv(gym.Wrapper):
         # turning -- reward turning towards the v_tgt_field sink;
         # yaw target is relative to current yaw; so reward if the change in yaw is in the direction and magnitude of the tgt
         delta_yaw = yaw_new - yaw_old
-        yaw_tgt = 0.01 * np.array([1, 0, -1]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
+        yaw_tgt = 0.005 * np.array([1, 0, -1]) @ y_vtgt_onehot   # yaw is (-) in the clockwise direction
         rewards['yaw_tgt'] = 1 * (1 - np.tanh(10*(delta_yaw - yaw_tgt))**2)
 
 #        print('grf ll: {:.3f}; grf rl: {:.3f}'.format(ll, rl))
