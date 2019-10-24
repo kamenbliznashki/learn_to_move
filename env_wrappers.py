@@ -22,7 +22,7 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
     def __init__(self, anneal_start=3000, **kwargs):
         self.anneal_start = anneal_start
         self.anneal_step = 0
-        self.init_timestep_limit = kwargs.pop('timestep_limit', 2500)
+        self.init_timestep_limit = kwargs.pop('max_episode_length', 2500)
         self.timestep_limit = self.init_timestep_limit
 
         self._model = kwargs.pop('model', '3D')
@@ -69,7 +69,7 @@ class L2M2019EnvBaseWrapper(L2M2019Env):
         # slowly anneal max episode length
         #   eg. anneal step 187500 / anneal start 3000 = 62.5 * init_timestep_limit 40 = 2500
         self.anneal_step += 1
-        self.timestep_limit = max(self.anneal_step / self.anneal_start * self.init_timestep_limit, 2500)
+        self.timestep_limit = min(max(1, self.anneal_step / self.anneal_start) * self.init_timestep_limit, 2500)
 
         obs_as_dict = kwargs.pop('obs_as_dict', True)
         return super().reset(obs_as_dict=obs_as_dict, **kwargs)
@@ -303,43 +303,26 @@ class RewardAugEnv(gym.Wrapper):
     @staticmethod
     def compute_rewards(x_vtgt_onehot, goal_dist, height, pitch, roll, dx, dy, dz, dpitch, droll, dyaw, rf, rl, ru, lf, ll, lu):
         """ note this operates on scalars (when called by env) and vectors (when called by state predictor models) """
-        # NOTE -- should be left right symmetric if using symmetric memory
-
-        # switch functions if inputs are tensors
-        is_tf = isinstance(height, tf.Tensor)
-        clip = tf.clip_by_value if is_tf else np.clip
-        tanh = tf.math.tanh if is_tf else np.tanh
-        where = tf.where if is_tf else np.where
-        ones_like = tf.ones_like if is_tf else np.ones_like
-        concat = tf.concat if is_tf else np.concatenate
-        sum_ = tf.reduce_sum if is_tf else np.sum
 
         rewards = {}
 
         # goals -- v_tgt_field sink
-        rewards['vtgt_dist'] = clip(tanh(1 / clip(goal_dist, 0.1, float('inf')) - 0.5), 0, float('inf'))  # e.g. [0. , 0.165, 0.462, 0.905, 0.999] for goal dist [2. , 1.5, 1. , 0.5, 0.1]
-        rewards['vtgt_goal'] = where(goal_dist < 0.3, 1 * ones_like(goal_dist), 0 * ones_like(goal_dist))
+        rewards['vtgt_dist'] = np.clip(np.tanh(1 / np.clip(goal_dist, 0.1, None) - 0.5), 0, None)  # e.g. [0. , 0.165, 0.462, 0.905, 0.999] for goal dist [2. , 1.5, 1. , 0.5, 0.1]
+        rewards['vtgt_goal'] = np.where(goal_dist < 0.3, 1 * np.ones_like(goal_dist), 0 * np.zeros_like(goal_dist))
 
         # stability -- penalize pitch and roll
-        rewards['pitch'] = - 1 * clip(pitch * dpitch, 0, float('inf')) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
-        rewards['roll']  = - 1 * clip(roll * droll, 0, float('inf'))
+        rewards['pitch'] = - 1 * np.clip(pitch * dpitch, 0, None) # if in different direction ie counteracting ie diff signs, then clamped to 0, otherwise positive penalty
+        rewards['roll']  = - 1 * np.clip(roll * droll, 0, None)
 
         # velocity -- reward dx; penalize dy and dz
         #   x_vtgt_onehot shows x vtgt [behind, here, ahead]
         #   rewards are [reward 0 dx w smaller magnitude than yaw target to incent turning, reward 0 dx to stop, reward (+) to move forward]
-        dx_reward_weights = concat([1 - tanh(5*dx)**2, 2 * (1 - tanh(5*dx)**2), 2 * tanh(dx)], axis=-1)
-        rewards['dx'] = sum_(dx_reward_weights * x_vtgt_onehot, axis=-1, keepdims=True)
-#        rewards['dx'] = np.where(x_vtgt_onehot == 1, 3 * np.tanh(dx), 2 * (1 - np.tanh(5*dx)**2))
-        rewards['dy'] = - 2 * tanh(2*dy)**2
-#        rewards['dz'] = - np.tanh(dz)**2
-
-        # footsteps -- penalize ground reaction forces outward/lateral/(+) (ie agent pushes inward and crosses legs)
-#        if ll is not None:
-#            rewards['grf_ll'] = - 0.5 * np.tanh(10*ll)
-#            rewards['grf_rl'] = - 0.5 * np.tanh(10*rl)
+        dx_reward_weights = np.concatenate([1 - np.tanh(5*dx)**2, 2 * (1 - np.tanh(5*dx)**2), 2 * np.tanh(dx)], axis=-1)
+        rewards['dx'] = np.sum(dx_reward_weights * x_vtgt_onehot, axis=-1, keepdims=True)
+        rewards['dy'] = - 2 * np.tanh(2*dy)**2
 
         # falling
-        rewards['height'] = where(height > 0.70, 0 * ones_like(height), -5 * ones_like(height))
+        rewards['height'] = np.where(height > 0.70, np.zeros_like(height), -5 * np.ones_like(height))
 
         return rewards
 

@@ -63,6 +63,30 @@ class Memory:
 
         print('Memory initialized.')
 
+    @property
+    def obs_mean(self):
+        return np.mean(self.obs[:self.size], axis=0)
+
+    @property
+    def obs_std(self):
+        return np.std(self.obs[:self.size], axis=0)
+
+    @property
+    def action_mean(self):
+        return np.mean(self.actions[:self.size], axis=0)
+
+    @property
+    def action_std(self):
+        return np.std(self.actions[:self.size], axis=0)
+
+    @property
+    def delta_obs_mean(self):
+        return np.mean(self.next_obs[:self.size] - self.obs[:self.size], axis=0)
+
+    @property
+    def delta_obs_std(self):
+        return np.std(self.next_obs[:self.size] - self.obs[:self.size], axis=0)
+
 
 def compute_mirrored_actions(actions):
     actions_dim = actions.shape[1]

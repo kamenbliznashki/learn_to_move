@@ -18,9 +18,9 @@ import logger
 best_ep_length = float('-inf')
 
 class SAC:
-    def __init__(self, observation_shape, action_shape, modeled_obs_idxs, v_tgt_field_size, *,
-                    policy_hidden_sizes, student_policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes,
-                    alpha, discount, tau, lr, n_sample_actions, learn_alpha=True, loss_ord=1, sym_loss_weigth=1):
+    def __init__(self, observation_shape, action_shape, v_tgt_field_size, *,
+                    policy_hidden_sizes, q_hidden_sizes, value_hidden_sizes,
+                    alpha, discount, tau, lr, n_sample_actions, learn_alpha=True, loss_ord=1, sym_loss=True, sym_loss_weigth=1):
         # inputs
         self.obs_ph = tf.placeholder(tf.float32, [None, *observation_shape], name='obs')
         self.actions_ph = tf.placeholder(tf.float32, [None, *action_shape], name='actions')
@@ -36,7 +36,6 @@ class SAC:
         q2 = Model('q2', hidden_sizes=q_hidden_sizes, output_size=1)
         policy = GaussianPolicy('policy', hidden_sizes=policy_hidden_sizes, output_size=action_shape[0],
                                 output_kernel_initializer='zeros', output_bias_initializer='zeros')
-        self.student_policy = GaussianPolicy('student_policy', hidden_sizes=student_policy_hidden_sizes, output_size=action_shape[0])
         if learn_alpha:
             beta = tf.Variable(tf.zeros(1), trainable=True, dtype=tf.float32, name='beta')
             alpha = tf.exp(beta)
@@ -53,14 +52,16 @@ class SAC:
         q1_loss = tf.reduce_mean(tf.norm(q1_at_memory_action - target_q, axis=1, ord=loss_ord), axis=0)
         q2_loss = tf.reduce_mean(tf.norm(q2_at_memory_action - target_q, axis=1, ord=loss_ord), axis=0)
         #   policy loss term
-        actions, log_pis = policy(self.obs_ph)  # (n_samples, batch_size, action_dim) and (...,1)
-        actions, log_pis = tf.squeeze(actions, 0), tf.squeeze(log_pis, 0)
-        obs_policy_actions = tf.concat([self.obs_ph, actions], 1)
+        self.actions, log_pis = policy(self.obs_ph)  # (n_samples, batch_size, action_dim) and (...,1)
+        self.actions, log_pis = tf.squeeze(self.actions, 0), tf.squeeze(log_pis, 0)
+        obs_policy_actions = tf.concat([self.obs_ph, self.actions], 1)
         q_at_policy_action = tf.minimum(q1(obs_policy_actions), q2(obs_policy_actions))
-        symmetry_actions = policy(compute_mirrored_obs(self.obs_ph, v_tgt_field_size))[0]
-        symmetry_actions = tf.squeeze(symmetry_actions, 0)
-        symmetry_loss = tf.reduce_mean(tf.norm(actions - compute_mirrored_actions(symmetry_actions), axis=1, ord=2), axis=0)
-        policy_loss = tf.reduce_mean(alpha * log_pis - q_at_policy_action) + sym_loss_weigth * symmetry_loss
+        policy_loss = tf.reduce_mean(alpha * log_pis - q_at_policy_action)
+        if sym_loss:
+            symmetry_actions = policy(compute_mirrored_obs(self.obs_ph, v_tgt_field_size))[0]
+            symmetry_actions = tf.squeeze(symmetry_actions, 0)
+            symmetry_loss = tf.reduce_mean(tf.norm(self.actions - compute_mirrored_actions(symmetry_actions), axis=1, ord=2), axis=0)
+            policy_loss +=  sym_loss_weigth * symmetry_loss
         #   value function loss term
         v = value_function(self.obs_ph)
         target_v = q_at_policy_action - alpha * log_pis
@@ -69,24 +70,16 @@ class SAC:
         if learn_alpha:
             target_entropy = - 1 * np.sum(action_shape)
             alpha_loss = tf.reduce_mean(- alpha * log_pis - alpha * target_entropy)
-        #   student policy loss -- mse on activations
-        with tf.variable_scope(policy.name, reuse=True):
-            policy_logits = policy.network(self.obs_ph)
-        with tf.variable_scope(self.student_policy.name):
-            student_policy_obs_ph = tf.gather(self.obs_ph, modeled_obs_idxs, axis=1)
-            student_policy_logits = self.student_policy.network(student_policy_obs_ph)
-        student_policy_loss = tf.losses.mean_squared_error(policy_logits, student_policy_logits)
 
         # 3. update ops
         optimizer = tf.train.AdamOptimizer(lr, name='optimizer')
         policy_train_op = optimizer.minimize(policy_loss, var_list=policy.trainable_vars, global_step=tf.train.get_or_create_global_step())
-        student_policy_train_op = optimizer.minimize(student_policy_loss, var_list=self.student_policy.trainable_vars)
         with tf.control_dependencies([policy_train_op]):
             v_train_op = optimizer.minimize(v_loss, var_list=value_function.trainable_vars)
             q1_train_op = optimizer.minimize(q1_loss, var_list=q1.trainable_vars)
             q2_train_op = optimizer.minimize(q2_loss, var_list=q2.trainable_vars)
         #   combined train ops
-        self.train_ops = [v_train_op, q1_train_op, q2_train_op, policy_train_op, student_policy_train_op, student_policy_loss]
+        self.train_ops = [v_train_op, q1_train_op, q2_train_op, policy_train_op]
         if learn_alpha:
             with tf.control_dependencies([q1_train_op, q2_train_op, v_train_op, policy_train_op]):
                 alpha_train_op = optimizer.minimize(alpha_loss, var_list=[beta])
@@ -97,13 +90,16 @@ class SAC:
                                             zip(target_value_function.trainable_vars, value_function.trainable_vars)])
 
         # 4. get action op
-        self.actions, _ = policy(self.obs_ph, n_sample_actions)
+        self.actions_sample, _ = policy(self.obs_ph, n_sample_actions)
 
     def initialize(self, sess):
         self.sess = sess
 
     def get_actions(self, obs):
         return self.sess.run(self.actions, {self.obs_ph: np.atleast_2d(obs)})
+
+    def sample_actions(self, obs):
+        return self.sess.run(self.actions_sample, {self.obs_ph: np.atleast_2d(obs)})
 
     def get_action_value(self, obs, actions):
         return self.sess.run(self.q_at_memory_action, {self.obs_ph: obs, self.actions_ph: actions})
@@ -112,11 +108,9 @@ class SAC:
         self.sess.run(self.target_update_ops)
 
     def train(self, batch):
-        out = self.sess.run(self.train_ops, {self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
+        self.sess.run(self.train_ops, {self.obs_ph: batch.obs, self.actions_ph: batch.actions, self.rewards_ph: batch.rewards,
                         self.dones_ph: batch.dones, self.next_obs_ph: batch.next_obs})
 
-        student_policy_loss = out[-2]
-        return student_policy_loss
 
 def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args):
 
@@ -144,13 +138,13 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
 
     # set up agent
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
-    agent = SAC(env.observation_space.shape, env.action_space.shape, spmodel.idxs, env.v_tgt_field_size, **alg_args)
+    agent = SAC(env.observation_space.shape, env.action_space.shape, env.v_tgt_field_size, **alg_args)
 
     # initialize session, agent, saver
     sess = tf.get_default_session()
     agent.initialize(sess)
     if spmodel is not None:
-        spmodel.initialize(sess, agent.student_policy)
+        spmodel.initialize(sess, memory, agent)
     # backward compatible to models that used mpi_adam -- ie only save and restore non-optimizer vars
     if n_total_steps == 0 and args.load_path is not None:
         vars_to_restore = [i[0] for i in tf.train.list_variables(args.load_path)]
@@ -175,8 +169,8 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
         tic = time.time()
 
         # sample action -> step env -> store transition
-        actions = agent.get_actions(obs)  # (n_samples, batch_size, action_dim)
-        actions = spmodel.get_best_action(obs, actions) if spmodel is not None else actions
+        actions = agent.sample_actions(obs)  # (n_samples, batch_size, action_dim)
+        actions = spmodel.get_best_action(obs, actions) if spmodel is not None else actions[0]
         next_obs, r, done, info = env.step(actions)
         r_aug = np.vstack([i.get('rewards', 0) for i in info])
         r_bonus = spmodel.get_exploration_bonus(obs, actions) if spmodel is not None else 0
@@ -206,9 +200,8 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
 
         # train
         batch = memory.sample(batch_size)
-        student_policy_loss = agent.train(batch)
         agent.update_target_net()
-        sp_loss = spmodel.train(memory)
+        sp_loss = spmodel.train()
 
         # save
         if t % args.save_interval == 0:
@@ -224,7 +217,6 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
             stats['episodes'] = n_episodes
             stats['steps_per_second'] = args.log_interval / (toc - tic)
             stats['sp_model_loss'] = sp_loss
-            stats['student_policy_loss'] = student_policy_loss
             stats['avg_return'] = np.mean(episode_rewards_history)
             stats['std_return'] = np.std(episode_rewards_history)
             stats['avg_aug_return'] = np.mean(episode_aug_rew_history)
@@ -246,7 +238,6 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
 def defaults(env_name=None):
     if env_name == 'L2M2019':
         return {'policy_hidden_sizes': (256, 256),
-                'student_policy_hidden_sizes': (64, 64),
                 'value_hidden_sizes': (256, 256),
                 'q_hidden_sizes': (256, 256),
                 'discount': 0.96,
@@ -259,6 +250,7 @@ def defaults(env_name=None):
                 'learn_alpha': True,
                 'n_sample_actions': 32,
                 'loss_ord': 1,
+                'sym_loss': True,
                 'sym_loss_weigth': 1}
     else:  # mujoco
         alpha = {
@@ -270,7 +262,6 @@ def defaults(env_name=None):
             }.get(env_name, 0.2)
 
         return {'policy_hidden_sizes': (128, 128),
-                'student_policy_hidden_sizes': (32, 32),
                 'value_hidden_sizes': (128, 128),
                 'q_hidden_sizes': (128, 128),
                 'discount': 0.99,
@@ -283,4 +274,5 @@ def defaults(env_name=None):
                 'learn_alpha': True,
                 'n_sample_actions': 32,
                 'loss_ord': 1,
+                'sym_loss': True,
                 'sym_loss_weigth': 1}
