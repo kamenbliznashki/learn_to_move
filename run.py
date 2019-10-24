@@ -11,6 +11,7 @@ tf.logging.set_verbosity(tf.logging.ERROR)
 
 from env_wrappers import DummyVecEnv, SubprocVecEnv, Monitor, L2M2019EnvBaseWrapper, RandomInitEnv, \
                             ActionAugEnv, RewardAugEnv, PoolVTgtEnv, SkipEnv, Obs2VecEnv, NoopResetEnv, L2M2019ClientWrapper
+from algs.memory import Memory
 from logger import save_json, load_json
 
 try:
@@ -175,6 +176,8 @@ def main(args, extra_args):
     if args.play:
         if env_args: env_args['visualize'] = True
         env = make_single_env(args.env, args.rank, args.n_env + 100, args.seed, env_args, args.output_dir)
+        # replace memory with saved statistics for infence
+        spmodel.memory = Memory.load_stats(os.path.join(os.path.dirname(args.load_path), 'memory_stats_best.npy'))
         obs = env.reset(seed=4)
         episode_rewards = 0
         episode_steps = 0

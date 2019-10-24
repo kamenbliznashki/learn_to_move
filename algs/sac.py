@@ -207,9 +207,11 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
         # save
         if t % args.save_interval == 0:
             saver.save(sess, args.output_dir + '/agent.ckpt', global_step=tf.train.get_global_step())
+            memory.save_stats(args.output_dir + '/memory_stats')
             if best_ep_length <= np.mean(episode_lengths_history):
                 best_ep_length = np.mean(episode_lengths_history)
                 best_saver.save(sess, args.output_dir + '/best_agent.ckpt', global_step=tf.train.get_global_step())
+                memory.save_stats(args.output_dir + '/memory_stats_best')
 
         # log stats
         if t % args.log_interval == 0:

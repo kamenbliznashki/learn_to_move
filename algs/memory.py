@@ -4,6 +4,8 @@ import tensorflow as tf
 
 
 Transition = namedtuple('Transition', ['obs', 'actions', 'rewards', 'dones', 'next_obs'])
+MemoryStats = namedtuple('Memory_stats',
+        ['obs_mean', 'obs_std', 'action_mean', 'action_std', 'delta_obs_mean', 'delta_obs_std'])
 
 class Memory:
     def __init__(self, max_size, observation_shape, action_shape, dtype='float32'):
@@ -87,6 +89,16 @@ class Memory:
     def delta_obs_std(self):
         return np.std(self.next_obs[:self.size] - self.obs[:self.size], axis=0)
 
+    @property
+    def stats(self):
+        return MemoryStats(self.obs_mean, self.obs_std, self.action_mean, self.action_std, self.delta_obs_mean, self.delta_obs_std)
+
+    def save_stats(self, filepath):
+        np.save(filepath, self.stats)
+
+    @staticmethod
+    def load_stats(filepath):
+        return MemoryStats(*np.load(filepath, allow_pickle=True))
 
 def compute_mirrored_actions(actions):
     actions_dim = actions.shape[1]
