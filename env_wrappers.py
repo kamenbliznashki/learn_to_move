@@ -360,7 +360,7 @@ class RewardAugEnv(gym.Wrapper):
         return o, r, d, i
 
 class SkipEnv(gym.Wrapper):
-    def __init__(self, env=None, n_skips=4):
+    def __init__(self, env=None, n_skips=4, **kwargs):
         """Return only every `skip`-th frame"""
         super().__init__(env)
         self.n_skips = n_skips

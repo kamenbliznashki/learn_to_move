@@ -30,7 +30,6 @@ parser.add_argument('--exp_name', default='exp', type=str)
 # training params
 parser.add_argument('--n_env', default=1, type=int, help='Number of environments in parallel.')
 parser.add_argument('--n_total_steps', default=0, type=int, help='Number of training steps on single or vectorized environment.')
-parser.add_argument('--max_episode_length', default=1000, type=int, help='Reset episode after reaching max length.')
 # logging
 parser.add_argument('--load_path', type=str)
 parser.add_argument('--output_dir', type=str)
@@ -64,7 +63,10 @@ def get_alg_config(alg, env, extra_args=None):
 def get_env_config(env, extra_args=None):
     env_args = None
     if env == 'L2M2019':
-        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'stepsize': 0.01, 'difficulty': 3}
+        env_args = {'model': '3D', 'visualize': False, 'integrator_accuracy': 1e-3, 'stepsize': 0.01, 'difficulty': 3,
+                    'max_episode_length': 2500, 'n_skips': 4}
+    else:
+        env_args = {'max_episode_length': 1000, 'n_skips': 1}
     if extra_args is not None and env_args is not None:
         env_args.update({k: v for k, v in extra_args.items() if k in env_args})
     return env_args
@@ -92,15 +94,14 @@ def make_single_env(env_name, mpi_rank, subrank, seed, env_args, output_dir):
     #   NOTE -- L2M2019Env uses seed in reseting the velocity target map in VTgtField.reset(seed) in v_tgt_field.py
 
     if env_name == 'L2M2019':
-        env = L2M2019EnvBaseWrapper(max_episode_length=args.max_episode_length, **env_args)
+        env = L2M2019EnvBaseWrapper(**env_args)
         env = RandomInitEnv(env)
         env = ActionAugEnv(env)
         env = PoolVTgtEnv(env)
         env = RewardAugEnv(env)
-        env = SkipEnv(env)
+        env = SkipEnv(env, **env_args)
         env = Obs2VecEnv(env)
 
-        args.max_episode_length = env.timestep_limit // env.n_skips
     else:
         import gym
         env = gym.envs.make(env_name)
@@ -169,7 +170,7 @@ def main(args, extra_args):
 
     # build and train agent
     learn = getattr(import_module('algs.' + args.alg), 'learn')
-    agent = learn(env, spmodel, args.seed, args.n_total_steps, args.max_episode_length, alg_args, args)
+    agent = learn(env, spmodel, args.seed, args.n_total_steps, env_args['max_episode_length'] // env_args['n_skips'], alg_args, args)
 
     if args.play:
         if env_args: env_args['visualize'] = True
@@ -179,7 +180,7 @@ def main(args, extra_args):
         episode_steps = 0
         while True:
 #            if episode_steps % 5 == 0: i = input('press key to continue ...')
-            action = agent.get_actions(obs)  # (n_samples, batch_size, action_dim)
+            action = agent.sample_actions(obs)  # (n_samples, batch_size, action_dim)
             action = spmodel.get_best_action(np.atleast_2d(obs), action)
             r_bonus = spmodel.get_exploration_bonus(np.atleast_2d(obs), action).squeeze()
             next_obs, rew, done, info = env.step(action.flatten())

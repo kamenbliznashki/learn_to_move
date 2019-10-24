@@ -200,6 +200,7 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
 
         # train
         batch = memory.sample(batch_size)
+        agent.train(batch)
         agent.update_target_net()
         sp_loss = spmodel.train()
 
