@@ -19,7 +19,7 @@ from osim.env import L2M2019Env
 
 class L2M2019EnvBaseWrapper(L2M2019Env):
     """ Wrapper to move certain class variable to instance variables """
-    def __init__(self, anneal_start=3000, **kwargs):
+    def __init__(self, anneal_start=1000, **kwargs):
         self.anneal_start = anneal_start
         self.anneal_step = 0
         self.init_timestep_limit = kwargs.pop('max_episode_length', 2500)

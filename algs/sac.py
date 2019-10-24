@@ -140,6 +140,10 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
     memory = Memory(int(max_memory_size), env.observation_space.shape, env.action_space.shape)
     agent = SAC(env.observation_space.shape, env.action_space.shape, env.v_tgt_field_size, **alg_args)
 
+    # init memory and env for training
+    memory.initialize(env, n_prefill_steps // env.num_envs, training=(n_total_steps > 0), policy=None)
+    obs = env.reset()
+
     # initialize session, agent, saver
     sess = tf.get_default_session()
     agent.initialize(sess)
@@ -160,10 +164,6 @@ def learn(env, spmodel, seed, n_total_steps, max_episode_length, alg_args, args)
         start_step = sess.run(tf.train.get_global_step()) + 1
         #env.anneal_step = start_step  # annealing of init pose env
         print('Restoring parameters at step {} from: {}'.format(start_step - 1, args.load_path))
-
-    # init memory and env for training
-    memory.initialize(env, n_prefill_steps // env.num_envs, training=(n_total_steps > 0), policy=agent if args.load_path else None)
-    obs = env.reset()
 
     for t in range(start_step, n_total_steps + start_step):
         tic = time.time()
