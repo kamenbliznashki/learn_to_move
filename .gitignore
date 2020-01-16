@@ -1,0 +1,10 @@
+results/
+__pycache__/
+.local/
+
+*.pyc
+
+# gym files
+err.log
+out.log
+
